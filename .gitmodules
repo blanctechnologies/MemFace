@@ -1,0 +1,3 @@
+[submodule "FaceVerse"]
+	path = FaceVerse
+	url = https://github.com/LizhenWangT/FaceVerse.git
