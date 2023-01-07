@@ -5,6 +5,8 @@ from typing import List
 import hydra
 from torch.cuda.amp import autocast
 from torch import optim, nn, utils, Tensor
+import torch.nn.functional as F
+from torchmetrics.functional import pairwise_cosine_similarity
 from torchvision.transforms import ToTensor
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
@@ -36,27 +38,38 @@ class Audio2Exp(pl.LightningModule):
 		self.values = None # dim = m x h_a
 		self.m = 1000 # number of keys and values => output of f_enc is 1000
 
-	def forward(self, a, mask=None, return_attn=None):
+	def forward(self):
 		# transformer with single head scaled dot product attn	
+		self.feature_extractor.eval()
 		scaled_dot_product()
 		return
 
 	def training_step(self, batch, batch_idx):
 		x, y = batch
+		y_hat = self(x)
+		l2_exp = torch.nn.MSELoss(y_hat, y)
+		# we need to pull Om along with y somehow
+		# to get Om_hat we need a separate function:
+		# step 1: get y_hat expressions
+		# step 2: put y_hat expressions into 3d_face reconstruction
+		# step 3: extract Om_hat
+		l2_vtx = torch.nn.MSELoss(Om_hat, Om) # dim(Om) = T × h_v × 3
+		lmem_reg = 1/(self.m*(self.m - 1))*(torch.sum(pairwise_cosine_similarity(self.keys, reduction='sum')) + torch.sum(pairwise_cosine_similarity(self.values, reduction='sum')))
+
 		loss = None # fill in later
 		self.log("loss", loss) 
 		return loss
 
 	def validation_step(self, batch, batch_idx):
-		val_loss = None # fill in later
+		val_loss = None # LATER
 		self.log("val_loss", val_loss)
 
 	def configure_optimizers(self):
-		# 1e-4 during training, 5e-6 during adaptation(200 epoch)
+		# 1e-4 training, 5e-6 adaptation(200 epoch)
 		optimizer = torch.optim.Adam(self.parameters(), lr=1e-4) 
 		return optimizer
 	
-	def scaled_dot_product(self, q, k, v, mask=None):
+	def attn(self, q, k, v, mask=None):
     d_k = q.size()[-1]
     attn_logits = torch.matmul(q, k.transpose(-2, -1))
     attn_logits = attn_logits / math.sqrt(d_k)
@@ -65,16 +78,23 @@ class Audio2Exp(pl.LightningModule):
     attention = F.softmax(attn_logits, dim=-1)
     values = torch.matmul(attention, v)
     return values, attention
-
-		
+	
+					
 class Encoder(nn.Module):
 	def __init__(self):
 		super().__init__()
-		self. = nn.Sequential(nn.Linear(28 * 28, 64), nn.ReLU(), nn.Linear(64, 3))
+		self.input_dim = 29 # LATER, num of audio features, T x 29, where 29 is dim of audio features, T - num of frames
+		self.hidden_dim = 64
+		self.n_layers = 1
+		self.lstm = nn.LSTM(input_dim, hidden_dim, n_layers)
 
   def forward(self, x):
-    return self.l1(x)
+		h_0 = Variable(torch.zeros(1, batch_size, self.hidden_dim).cuda())
+		c_0 = Variable(torch.zeros(1, batch_size, self.hidden_dim).cuda())
 
+		output, (final_hidden_state, final_cell_state) = self.lstm(input, (h_0, c_0))
+    return final_hidden_state[-1])
+		
 
 class Decoder(nn.Module):
 	def __init__(self):
