@@ -1,12 +1,6 @@
-[submodule "FaceVerse"]
-	path = FaceVerse
-	url = https://github.com/LizhenWangT/FaceVerse.git
 [submodule "DECA"]
 	path = DECA
 	url = https://github.com/yfeng95/DECA.git
 [submodule "emoca"]
 	path = emoca
 	url = https://github.com/radekd91/emoca.git
-[submodule "deepspeech.pytorch"]
-	path = deepspeech.pytorch
-	url = https://github.com/SeanNaren/deepspeech.pytorch.git

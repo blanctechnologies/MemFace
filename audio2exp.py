@@ -56,8 +56,9 @@ class Audio2Exp(pl.LightningModule):
 		l2_vtx = torch.nn.MSELoss(Om_hat, Om) # dim(Om) = T × h_v × 3
 		lmem_reg = 1/(self.m*(self.m - 1))*(torch.sum(pairwise_cosine_similarity(self.keys, reduction='sum')) + torch.sum(pairwise_cosine_similarity(self.values, reduction='sum')))
 
-		loss = None # fill in later
+		loss = l2_exp + l2_vtx + 0.1 * lmem_reg
 		self.log("loss", loss) 
+		
 		return loss
 
 	def validation_step(self, batch, batch_idx):
@@ -78,22 +79,16 @@ class Audio2Exp(pl.LightningModule):
     attention = F.softmax(attn_logits, dim=-1)
     values = torch.matmul(attention, v)
     return values, attention
-	
-					
+
+
 class Encoder(nn.Module):
 	def __init__(self):
 		super().__init__()
-		self.input_dim = 29 # LATER, num of audio features, T x 29, where 29 is dim of audio features, T - num of frames
-		self.hidden_dim = 64
-		self.n_layers = 1
-		self.lstm = nn.LSTM(input_dim, hidden_dim, n_layers)
-
-  def forward(self, x):
-		h_0 = Variable(torch.zeros(1, batch_size, self.hidden_dim).cuda())
-		c_0 = Variable(torch.zeros(1, batch_size, self.hidden_dim).cuda())
-
-		output, (final_hidden_state, final_cell_state) = self.lstm(input, (h_0, c_0))
-    return final_hidden_state[-1])
+		# change input accordingly to the size of the audio embedding 29 -> ?
+		# Q1: should there be Relu between Linear and LayerNorm
+		self.l1 = nn.Sequential(nn.Linear(29, 64), nn.ReLU(), nn.LayerNorm(64), nn.Dropout())
+	def forward(self, x):
+		return self.l1(x)
 		
 
 class Decoder(nn.Module):
@@ -110,6 +105,23 @@ class ImplicitMem(nn.Module):
 		self.l1 = x
 	def forward(self, x):
 		return self.l1(x)
+
+
+class LSTMEncoder(nn.Module):
+	# will try this one later
+	def __init__(self):
+		super().__init__()
+		self.input_dim = 29 # LATER, num of audio features, T x 29, where 29 is dim of audio features, T - num of frames
+		self.hidden_dim = 64
+		self.n_layers = 1
+		self.lstm = nn.LSTM(self.input_dim, self.hidden_dim, self.n_layers, batch_first=True)
+
+  def forward(self, x):
+		h_0 = Variable(torch.zeros(1, batch_size, self.hidden_dim).cuda())
+		c_0 = Variable(torch.zeros(1, batch_size, self.hidden_dim).cuda())
+
+		output, (final_hidden_state, final_cell_state) = self.lstm(input, (h_0, c_0))
+    return final_hidden_state[-1])
 
 
 # model
