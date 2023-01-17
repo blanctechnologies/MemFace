@@ -86,13 +86,36 @@ class Encoder(nn.Module):
 		super().__init__()
 		# change input accordingly to the size of the audio embedding 29 -> ?
 		# Q1: should there be Relu between Linear and LayerNorm
-		self.l1 = nn.Sequential(nn.Linear(29, 64), nn.ReLU(), nn.LayerNorm(64), nn.Dropout())
+		self.l1 = nn.Sequential(nn.Linear(29, 64), nn.ReLU(), nn.LayerNorm(64), nn.Dropout(), PositionalEncoding())
 	def forward(self, x):
 		return self.l1(x)
-		
+
+
+class PositionalEncoding(nn.Module):
+	def __init__(self, d_model=64, dropout=0.1, max_len=5000):
+		# change max len to max T, waiting on this info from Anni
+		super().__init__()
+		self.dropout = nn.Dropout(p=dropout)
+
+		position = torch.arange(max_len).unsqueeze(1)
+		div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+		pe = torch.zeros(max_len, 1, d_model)
+		pe[:, 0, 0::2] = torch.sin(position * div_term)
+		pe[:, 0, 1::2] = torch.cos(position * div_term)
+		self.register_buffer('pe', pe)
+
+	def forward(self, x):
+		"""
+		Args:
+			x: Tensor, shape [seq_len, batch_size, embedding_dim]
+		"""
+		x = x + self.pe[:x.size(0)]
+		return self.dropout(x)
+
 
 class Decoder(nn.Module):
 	def __init__(self):
+		# TransformerEncoder or ConformerEncoder
 		super().__init__()
 		self.l1 = nn.Sequential(nn.Linear(3, 64), nn.ReLU(), nn.Linear(64, 28 * 28))
 	def forward(self, x):
