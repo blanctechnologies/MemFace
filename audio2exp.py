@@ -25,34 +25,29 @@ device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("
 
 
 class Audio2Exp(pl.LightningModule):
-	def __init__(self, encoder, implicitmem, decoder):
+	def __init__(self):
 		super().__init__()
 		self.save_hyperparameters()
 
+		self.M = 1000 # number of keys and values => output of f_enc is 1000
+		self.d_k = 64
+		self.d_v = 64
+		self.keys = nn.Embedding(M, d_k)
+		self.values = nn.Embedding(M, d_v)
 
-		self.encoder = encoder
-		self.implicitmem = implicitmem
-		self.decoder = decoder # f_dec
-		self.query = None # f_enc(A), dim = T x d_k
-		self.keys = None # dim = m x h_a
-		self.values = None # dim = m x h_a
-		self.m = 1000 # number of keys and values => output of f_enc is 1000
+		self.encoder = Encoder()
+		self.implicitmem = ImplicitMem(keys, values)
+		self.decoder = Decoder() 
 
-	def forward(self):
-		# transformer with single head scaled dot product attn	
-		self.feature_extractor.eval()
-		scaled_dot_product()
-		return
+	def forward(self, x):
+		encoded_audiofeature = self.encoder(x)
+		output = self.decoder(encoded_audiofeature + self.implicitmem(encoded_audiofeature))
+		return output
 
 	def training_step(self, batch, batch_idx):
 		x, y = batch
 		y_hat = self(x)
 		l2_exp = torch.nn.MSELoss(y_hat, y)
-		# we need to pull Om along with y somehow
-		# to get Om_hat we need a separate function:
-		# step 1: get y_hat expressions
-		# step 2: put y_hat expressions into 3d_face reconstruction
-		# step 3: extract Om_hat
 		l2_vtx = torch.nn.MSELoss(Om_hat, Om) # dim(Om) = T × h_v × 3
 		lmem_reg = 1/(self.m*(self.m - 1))*(torch.sum(pairwise_cosine_similarity(self.keys, reduction='sum')) + torch.sum(pairwise_cosine_similarity(self.values, reduction='sum')))
 
@@ -70,15 +65,34 @@ class Audio2Exp(pl.LightningModule):
 		optimizer = torch.optim.Adam(self.parameters(), lr=1e-4) 
 		return optimizer
 	
-	def attn(self, q, k, v, mask=None):
-    d_k = q.size()[-1]
-    attn_logits = torch.matmul(q, k.transpose(-2, -1))
-    attn_logits = attn_logits / math.sqrt(d_k)
-    if mask is not None:
-        attn_logits = attn_logits.masked_fill(mask == 0, -9e15)
-    attention = F.softmax(attn_logits, dim=-1)
-    values = torch.matmul(attention, v)
-    return values, attention
+
+class ImplicitMem(nn.Module):
+	def __init__(self, keys, values, d_model=64, d_k=64, d_v=64, dropout=0.1, M=1000):
+		super().__init__()
+		
+		self.keys = keys
+		self.values = values
+		self.d_k = d_k
+		self.d_v = d_v
+		self.w_q = nn.Linear(d_model, d_k, bias=False)
+		self.w_k = nn.Linear(d_model, d_k, bias=False)
+		self.w_v = nn.Linear(d_model, d_v, bias=False)
+		self.w_o = nn.Linear(d_model, d_v, bias=False)
+
+		self.dropout = nn.Dropout(dropout)
+
+	def forward(self, query):
+		q = self.w_q(query)
+		k = self.w_k(self.keys)
+		v = self.w_v(self.values)
+
+		scores = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.d_k, dtype=torch.float))
+		attention_weights = torch.softmax(scores, dim=-1)
+		attention = torch.matmul(attention_weights, v)
+		output = self.w_o(attention)
+		output = self.dropout(attention)
+		
+		return output
 
 
 class Encoder(nn.Module):
@@ -122,36 +136,19 @@ class Decoder(nn.Module):
 		return self.l1(x)
 
 
-class ImplicitMem(nn.Module):
-	def __init__(self):
-		super().__init__()
-		self.l1 = x
-	def forward(self, x):
-		return self.l1(x)
-
-
-class LSTMEncoder(nn.Module):
-	# will try this one later
-	def __init__(self):
-		super().__init__()
-		self.input_dim = 29 # LATER, num of audio features, T x 29, where 29 is dim of audio features, T - num of frames
-		self.hidden_dim = 64
-		self.n_layers = 1
-		self.lstm = nn.LSTM(self.input_dim, self.hidden_dim, self.n_layers, batch_first=True)
-
-  def forward(self, x):
-		h_0 = Variable(torch.zeros(1, batch_size, self.hidden_dim).cuda())
-		c_0 = Variable(torch.zeros(1, batch_size, self.hidden_dim).cuda())
-
-		output, (final_hidden_state, final_cell_state) = self.lstm(input, (h_0, c_0))
-    return final_hidden_state[-1])
-
-
+'''
 # model
 audio2exp = Audio2Enc(Encoder(), ImplicitMem(), Decoder())
 
 # train model
 trainer = pl.Trainer(callbacks=[EarlyStopping(monitor="val_loss", mode="min")])
 trainer.fit(model=audio2exp, train_dataloaders=train_loader)
+'''
+d_k = 64
+d_v = 64
+keys = nn.Embedding(M, d_k)
+values = nn.Embedding(M, d_v)
+implicitmem = ImplicitMem(keys, values)
+
 
 
