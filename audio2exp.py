@@ -2,6 +2,7 @@ import os
 import json
 from typing import List
 
+import torch
 import hydra
 from torch.cuda.amp import autocast
 from torch import optim, nn, utils, Tensor
@@ -10,12 +11,6 @@ from torchmetrics.functional import pairwise_cosine_similarity
 from torchvision.transforms import ToTensor
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
-
-from deepspeech.pytorch.deepspeech_pytorch.model import DeepSpeech
-from deepspeech.pytorch.deepspeech_pytorch.configs.inference_config import TranscribeConfig
-from deepspeech.pytorch.deepspeech_pytorch.decoder import Decoder
-from deepspeech.pytorch.deepspeech_pytorch.data_loader import ChunkSpectrogramParser
-from deepspeech.pytorch.deepspeech_pytorch.utils import load_decoder, load_model
 
 
 pl.seed_everything(42)
@@ -121,7 +116,7 @@ class PositionalEncoding(nn.Module):
 	def forward(self, x):
 		"""
 		Args:
-			x: Tensor, shape [seq_len, batch_size, embedding_dim]
+			x: Tensor, shape [batch_size, seq_len, embedding_dim]
 		"""
 		x = x + self.pe[:x.size(0)]
 		return self.dropout(x)
@@ -150,9 +145,10 @@ trainer.fit(model=audio2exp, train_dataloaders=train_loader)
 '''
 d_k = 64
 d_v = 64
+M = 1000
 keys = nn.Embedding(M, d_k)
 values = nn.Embedding(M, d_v)
 implicitmem = ImplicitMem(keys, values)
 
 
-
+print(implicitmem)
