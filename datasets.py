@@ -22,10 +22,9 @@ class Audio2ExpDataset(Dataset):
 				exp_coeff = torch.from_numpy(numpy.load(os.join(coeff_folderpath, 'exp.npy')))
 				pose_coeff = torch.from_numpy(numpy.load(os.join(coeff_folderpath, 'pose.npy')))
 				shape_coeff = torch.from_numpy(numpy.load(os.join(coeff_folderpath, 'shape.npy')))
-				cam_coeff = torch.from_numpy(numpy.load(os.join(coeff_folderpath, 'cam.npy')))
 				landmarks3d = torch.from_numpy(numpy.load(os.join(coeff_folderpath, 'landmarks3d.npy')))
 				coeff = {'exp_coeff': exp_coeff, 'pose_coeff': pose_coeff,\
-									'shape_coeff': shape_coeff, 'cam_coeff': cam_coeff, 'landmarks3d': landmarks3d}\
+									'shape_coeff': shape_coeff, 'landmarks3d': landmarks3d}\
 				return audio_embed, coeff
 
 

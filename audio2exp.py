@@ -11,8 +11,10 @@ from torchmetrics.functional import pairwise_cosine_similarity
 from torchvision.transforms import ToTensor
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+from pytorch_lightning.loggers import WandbLogger
 
 
+wandb_logger = WandbLogger(name='Audio2Exp',project='MemFace')
 pl.seed_everything(42)
 torch.backends.cudnn.determinstic = True
 torch.backends.cudnn.benchmark = False
@@ -140,7 +142,7 @@ class Decoder(nn.Module):
 audio2exp = Audio2Enc(Encoder(), ImplicitMem(), Decoder())
 
 # train model
-trainer = pl.Trainer(callbacks=[EarlyStopping(monitor="val_loss", mode="min")])
+trainer = pl.Trainer(callbacks=[EarlyStopping(monitor="val_loss", mode="min")], logger= wandb_logger, gpus=1, distributed_backend='dp')
 trainer.fit(model=audio2exp, train_dataloaders=train_loader)
 '''
 d_k = 64
