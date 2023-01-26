@@ -4,6 +4,9 @@
 
 Implementation of <a href="https://arxiv.org/abs/2212.05005v2">MemFace</a> in Pytorch. MemFace achieves SOTA on the task of Lips Synchronization and Talking Face generation. 
 
+## Dataset
+I used about 7 hours of AVSpeech dataset for Audio2Expression.
+
 ## Citations
 ```bibtex
 @article{tang2022memories,
