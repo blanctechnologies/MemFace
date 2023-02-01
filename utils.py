@@ -1,4 +1,3 @@
-import FaceVerse as fv
 import numpy as np
 import pickle
 from PIL import Image, ImageDraw
@@ -11,7 +10,6 @@ import torchvision.transforms.functional as F
 import torch
 import openmesh as om
 import trimesh
-from gdl import 
 
 def faceReconstruction(filepath):
 	
@@ -77,7 +75,7 @@ def readLandmarks(landmark_filepath, only_mouth = False, visualize = False):
 		print(f'visualization filename: {vis_name}')
 
 
-def readCoeff(shape_filepath, exp_filepath, pose_filepath):
+def readCoeff(shape_filepath, exp_filepath, pose_filepath, detail_filepath):
 	print('+----------- Exp ------------+')
 	exp = np.load(exp_filepath, allow_pickle=True)
 	print(exp)
@@ -93,7 +91,12 @@ def readCoeff(shape_filepath, exp_filepath, pose_filepath):
 	print(shape)
 	print(f"len: {len(shape)}")
 
-	return shape, exp, pose
+	print('+----------- Detail ------------+')
+	detail = np.load(detail_filepath, allow_pickle=True)
+	print(detail)
+	print(f"len: {len(detail)}")
+
+	return shape, exp, pose, detail
 
 
 def readObj(obj_filepath):
@@ -108,26 +111,6 @@ def readObj(obj_filepath):
 	print(f'len: {mesh.vertices.shape}')
 	return None
 
-
-def getOm(obj, landmark):
-	mouth_landmarks = landmarks[]
-	objects = []
-	with (open(landmark_filepath, "rb")) as openfile:
-		while True:
-			try:
-				objects.append(pickle.load(openfile))
-			except EOFError:
-				break
-	mouth_landmarks = objects[1][48:69]
-	# mouth_landmarks = torch.Tensor([[[int(objects[1][i][0]), int(objects[1][i][1])] for i in range(len(objects[1])) if 48 <= i < 69]])
-	mesh = trimesh.load_mesh(obj_filepath)
-
-
-	# find closest projections from mouth_landmarks to mesh verticies
-
-	
-	return None
-
 def reconstructFlame(shapecode, expcode, posecode):
 	verts, landmarks2d, landmarks3d = self.deca.flame(shape_params=shapecode, expression_params=expcode, pose_params=posecode)
 	print(landmarks3d)
@@ -135,11 +118,11 @@ def reconstructFlame(shapecode, expcode, posecode):
 
 if __name__ == '__main__':
 	landmark = '/home/avocoral/MemFace/emoca/output/processed_2023_Jan_02_17-22-45/testvid/landmarks/000042_000.pkl'
-	exp_filepath = '/home/avocoral/MemFace/emoca/output/processed_2023_Jan_02_17-22-45/testvid/results/EMOCA/000042_000/exp.npy'
-	pose_filepath = '/home/avocoral/MemFace/emoca/output/processed_2023_Jan_02_17-22-45/testvid/results/EMOCA/000042_000/pose.npy'
-	shape_filepath = '/home/avocoral/MemFace/emoca/output/processed_2023_Jan_02_17-22-45/testvid/results/EMOCA/000042_000/shape.npy'
-	obj_filepath = '/home/avocoral/MemFace/emoca/output/processed_2023_Jan_02_17-22-45/testvid/results/EMOCA/000042_000/mesh_coarse_detail.obj'
+	exp_filepath = '/home/avocoral/MemFace/emoca/output2/processed_2023_Jan_26_18-14-37/02uzUf1LilE_10/results/EMOCA/000001_000/exp.npy'
+	pose_filepath = '/home/avocoral/MemFace/emoca/output2/processed_2023_Jan_26_18-14-37/02uzUf1LilE_10/results/EMOCA/000001_000/pose.npy'
+	shape_filepath = '/home/avocoral/MemFace/emoca/output2/processed_2023_Jan_26_18-14-37/02uzUf1LilE_10/results/EMOCA/000001_000/shape.npy'
+	detail_filepath = '/home/avocoral/MemFace/emoca/output2/processed_2023_Jan_26_18-14-37/02uzUf1LilE_10/results/EMOCA/000001_000/detail.npy'
 	# readLandmarks(landmark, only_mouth=True, visualize=True)
-	shapecode, expcode, posecode = readCoeff(shape_filepath, exp_filepath, pose_filepath)
+	shapecode, expcode, posecode, detail = readCoeff(shape_filepath, exp_filepath, pose_filepath, detail_filepath)
 
 	# readObj(obj_filepath)

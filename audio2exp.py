@@ -125,7 +125,7 @@ class PositionalEncoding(nn.Module):
 
 
 class Decoder(nn.Module):
-	def __init__(self, d_model=64, nhead=8, num_layers=3):
+	def __init__(self, d_model=64, nhead=1, num_layers=2):
 		# TransformerEncoder or ConformerEncoder
 		super().__init__()
 		encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead)

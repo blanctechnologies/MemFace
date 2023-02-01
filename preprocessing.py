@@ -9,11 +9,24 @@ import torch.multiprocessing as mp
 import torchaudio
 from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC
 
+
+import sys
+from emoca.gdl_apps.EMOCA.utils.load import load_model
+from emoca.gdl.datasets.FaceVideoDataModule import TestFaceVideoDM
+import emoca.gdl
+from pathlib import Path
+from tqdm import auto
+import argparse
+from emoca.gdl_apps.EMOCA.utils.io import save_obj, save_images, save_codes, test
+
+
 DATA_DIR = Path('/mnt/sda/AVSpeech')
 AUDIO_DIR = DATA_DIR / 'audio'
 AUDIO_ENCODINGS_DIR = DATA_DIR / 'audio_encodings'
 TRANSCRIPT_DIR = DATA_DIR / 'transcripts'
 
+
+sys.path.insert(0, '/home/avocoral/MemFace')
 torch.random.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -130,15 +143,56 @@ def extractAudioEncodings():
 				p.map(getAudioEncodingWorker, range(num_workers))
 
 
-def extractExp():
+def extractCoeff(input_video, output_folder):
 	# extracts exp.npy for each frame of each video
-	return None
+	path_to_models = args.path_to_models
+	image_type = 'geometry_detail'
+	cat_dim = 0
+	include_transparent = False
+	processed_subfolder = None
+	
+	model_name = 'EMOCA'
+	mode = 'detail'
+	
+	## 1) Process the video - extract the frames from video and detected faces
+	dm = TestFaceVideoDM(input_video, output_folder, processed_subfolder=processed_subfolder, 
+			batch_size=4, num_workers=4)
+	dm.prepare_data()
+	dm.setup()
+	processed_subfolder = Path(dm.output_dir).name
+	## 2) Load the model
+	emoca, conf = load_model(path_to_models, model_name, mode)
+	emoca.cuda()
+	emoca.eval()
+
+	outfolder = str(Path(output_folder) / processed_subfolder / Path(input_video).stem / "results" / model_name)
+
+	## 3) Get the data loadeer with the detected faces
+	dl = dm.test_dataloader()
+	landmarks3d = []
+	normals = []
+	## 4) Run the model on the data
+	for j, batch in enumerate (auto.tqdm( dl)):
+		current_bs = batch["image"].shape[0]
+		img = batch
+		vals, visdict = test(emoca, img)
+		# print('+---------------- Landmarks3D ----------------+')
+		# print(vals['landmarks3d'])
+		landmarks3d.append(vals['landmarks3d'])
+		for i in range(current_bs):
+			name =	batch["image_name"][i]
+
+			sample_output_folder = Path(outfolder) /name
+			sample_output_folder.mkdir(parents=True, exist_ok=True)
+			save_codes(Path(outfolder), name, vals, i)
 
 
 if __name__ == '__main__':
 	# extract_audio()
-	extractAudioEncodings()
-
+	# extractAudioEncodings()
+	input_video = '02uzUf1LilE_10.mp4'
+	output_folder = '/home/avocoral/MemFace/02uzUf1LilE_10.mp4'
+	extractCoeff(input_video, output_folder)
 
 
 
