@@ -116,6 +116,16 @@ def reconstructFlame(shapecode, expcode, posecode):
 	print(landmarks3d)
 	return landmarks3d
 
+
+def get_Om(pose, shape, exp):
+	"""
+	returns 3d coordinates of Flame model, based on pose, shape, exp
+	"""
+	verts, landmarks2d, landmarks3d = self.deca.flame(shape_params=shape, expression_params=exp, pose_params=pose)
+	print(landmarks3d)
+	return landmarks3d
+
+
 if __name__ == '__main__':
 	landmark = '/home/avocoral/MemFace/emoca/output/processed_2023_Jan_02_17-22-45/testvid/landmarks/000042_000.pkl'
 	exp_filepath = '/home/avocoral/MemFace/emoca/output2/processed_2023_Jan_26_18-14-37/02uzUf1LilE_10/results/EMOCA/000001_000/exp.npy'
@@ -124,5 +134,5 @@ if __name__ == '__main__':
 	detail_filepath = '/home/avocoral/MemFace/emoca/output2/processed_2023_Jan_26_18-14-37/02uzUf1LilE_10/results/EMOCA/000001_000/detail.npy'
 	# readLandmarks(landmark, only_mouth=True, visualize=True)
 	shapecode, expcode, posecode, detail = readCoeff(shape_filepath, exp_filepath, pose_filepath, detail_filepath)
-
-	# readObj(obj_filepath)
+	landmarks3d = get_Om(pose, shape, exp)
+	print(lendmarks3d)

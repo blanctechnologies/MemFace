@@ -5,6 +5,7 @@ import os
 import pandas as pd
 from torchvision.io import read_image
 import numpy as np
+import torch.nn.functional as F
 
 
 # based on AVSpeech dataset
@@ -18,15 +19,17 @@ class Audio2ExpDataset(Dataset):
 				return len(os.listdir(self.audio_embed_dir))
 
 		def __getitem__(self, idx):
-				audio_embed_filepath = os.path.join(self.audio_embed_dir, os.listdir(self.audio_embed_dir)[idx])
-				audio_embed = torch.load(audio_embed_filepath)
-				print(f'audio embedding:  {audio_embed[1]}')
-				print(f'audio embedding len: {len(audio_embed)}')
-				print(f'audio embedding [0] shape: {audio_embed[0].shape}')
-				print(f'audio embedding [1] shape: {audio_embed[1].shape}')
-			
-				
-				coeff_folderpath = os.path.join(self.coeff_dir, os.listdir(self.coeff_dir)[idx])
+				sample_name = os.listdir(self.audio_embed_dir)[idx]
+				audio_embed_filepath = os.path.join(self.audio_embed_dir, sample_name)
+				audio_embed = torch.cat(torch.load(audio_embed_filepath), dim=0)
+				print(f'audio embedding name: {audio_embed_filepath}')
+				print(f'foldername = {sample_name[:-3]}')
+				coeff_folderpath = os.path.join(self.coeff_dir, sample_name[:-3])
+				print(f'coeff_folderpath: {coeff_folderpath}')
+
+				print(f'audio_embed shape: {audio_embed.shape}')
+				print(f'audio_embed: {audio_embed}')	
+								
 				exp	= []
 				pose = []
 				shape = []
@@ -39,7 +42,17 @@ class Audio2ExpDataset(Dataset):
 						Om.append(torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'landmarks3d.npy'))))
 						
 				coeff = {'exp_coeff': torch.stack(exp), 'pose_coeff': torch.stack(pose),\
-									'shape_coeff': torch.stack(shape), 'landmarks3d': torch.stack(Om)}
+									'shape_coeff': torch.stack(shape), 'landmarks3d': torch.squeeze(torch.stack(Om))}
+				video_frames_num = coeff['exp_coeff'].shape[0]
+				
+				print(f'video_frames_num: {video_frames_num}')
+				audio_embed = F.interpolate(audio_embed.T.unsqueeze(0), size=[186], mode='nearest').squeeze(0).T
+
+				print(f'new audio_embed shape: {audio_embed.shape}')
+				print(f"exp_coeff shape: {coeff['exp_coeff'].shape}")
+				print(f"pose_coeff shape: {coeff['pose_coeff'].shape}")
+				print(f"shape_coeff shape: {coeff['shape_coeff'].shape}")
+				print(f"landmarks3d shape: {coeff['landmarks3d'].shape}")
 				return audio_embed, coeff
 
 
@@ -83,4 +96,6 @@ if __name__ == '__main__':
 		datamodule = Audio2ExpDataModule()
 		datamodule.setup()
 		# print(f'len: {len(datamodule.train)}')
-		print(f'element #0: {datamodule.train.__getitem__(1)}')
+		print(f'element #0: {datamodule.train.__getitem__(2)}')
+				
+
