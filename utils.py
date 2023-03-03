@@ -10,10 +10,15 @@ import torchvision.transforms.functional as F
 import torch
 import openmesh as om
 import trimesh
+import sys
+sys.path.insert(0, '/home/avocoral/MemFace/emoca')
 
-def faceReconstruction(filepath):
-	
-	return None
+from gdl_apps.EMOCA.utils.load import load_model
+from gdl.utils.FaceDetector import FAN
+from gdl.datasets.FaceVideoDataModule import TestFaceVideoDM
+from gdl_apps.EMOCA.utils.io import save_obj, save_images, save_codes, test, decode
+import os
+import shutil
 
 def readReconstruction(filepath):
 	f = np.load(filepath, allow_pickle=True)
@@ -75,15 +80,15 @@ def readLandmarks(landmark_filepath, only_mouth = False, visualize = False):
 		print(f'visualization filename: {vis_name}')
 
 
-def readCoeff(shape_filepath, exp_filepath, pose_filepath, detail_filepath):
+def readCoeff(shape_filepath, exp_filepath, pose_filepath, cam_filepath):
 	print('+----------- Exp ------------+')
 	exp = np.load(exp_filepath, allow_pickle=True)
-	print(exp)
+	print(torch.from_numpy(exp))
 	print(f"len: {len(exp)}")
 
 	print('+----------- Pose ------------+')
 	pose = np.load(pose_filepath, allow_pickle=True)
-	print(pose)
+	print(torch.from_numpy(pose))
 	print(f"len: {len(pose)}")
 	
 	print('+----------- Shape ------------+')
@@ -91,12 +96,12 @@ def readCoeff(shape_filepath, exp_filepath, pose_filepath, detail_filepath):
 	print(shape)
 	print(f"len: {len(shape)}")
 
-	print('+----------- Detail ------------+')
-	detail = np.load(detail_filepath, allow_pickle=True)
-	print(detail)
-	print(f"len: {len(detail)}")
+	print('+----------- Cam ------------+')
+	cam = np.load(cam_filepath, allow_pickle=True)
+	print(cam)
+	print(f"len: {len(cam)}")
 
-	return shape, exp, pose, detail
+	return shape, exp, pose, cam
 
 
 def readObj(obj_filepath):
@@ -111,28 +116,45 @@ def readObj(obj_filepath):
 	print(f'len: {mesh.vertices.shape}')
 	return None
 
-def reconstructFlame(shapecode, expcode, posecode):
-	verts, landmarks2d, landmarks3d = self.deca.flame(shape_params=shapecode, expression_params=expcode, pose_params=posecode)
-	print(landmarks3d)
-	return landmarks3d
-
+def move_files_around(coeff_dir='/mnt/sda/AVSpeech/video', metadata_dir='/mnt/sda/AVSpeech/metadata'):
+	for filename in os.listdir(coeff_dir):
+		# move metadata.pkl
+		shutil.move(os.path.join(coeff_dir, filename, 'metadata.pkl'), os.path.join(coeff_dir, filename, filename, 'metadata.pkl'))
+		# move folder with all metadata outside
+		shutil.move(os.path.join(coeff_dir, filename, filename), os.path.join(metadata_dir, filename))
 
 def get_Om(pose, shape, exp):
 	"""
 	returns 3d coordinates of Flame model, based on pose, shape, exp
 	"""
-	verts, landmarks2d, landmarks3d = self.deca.flame(shape_params=shape, expression_params=exp, pose_params=pose)
-	print(landmarks3d)
+	path_to_models = "/home/avocoral/MemFace/emoca/assets/EMOCA/models"
+	model_name = 'EMOCA'
+	mode = 'detail'
+	emoca, conf = load_model(path_to_models, model_name, mode)
+	emoca.cuda()
+	emoca.eval()
+		
+	codedict = {}
+	codedict['shapecode'] = shape
+	codedict['expcode'] = exp
+	codedict['posecode'] = pose
+	verts, landmarks2d, landmarks3d = emoca.deca.flame(shape_params=torch.from_numpy(shape).unsqueeze(0).to('cuda:0'), expression_params=torch.from_numpy(exp).unsqueeze(0).to('cuda:0'),pose_params=torch.from_numpy(pose).unsqueeze(0).to('cuda:0'))
+
+	print(f'landmarks3d: {landmarks3d}')
 	return landmarks3d
 
 
 if __name__ == '__main__':
-	landmark = '/home/avocoral/MemFace/emoca/output/processed_2023_Jan_02_17-22-45/testvid/landmarks/000042_000.pkl'
-	exp_filepath = '/home/avocoral/MemFace/emoca/output2/processed_2023_Jan_26_18-14-37/02uzUf1LilE_10/results/EMOCA/000001_000/exp.npy'
-	pose_filepath = '/home/avocoral/MemFace/emoca/output2/processed_2023_Jan_26_18-14-37/02uzUf1LilE_10/results/EMOCA/000001_000/pose.npy'
-	shape_filepath = '/home/avocoral/MemFace/emoca/output2/processed_2023_Jan_26_18-14-37/02uzUf1LilE_10/results/EMOCA/000001_000/shape.npy'
-	detail_filepath = '/home/avocoral/MemFace/emoca/output2/processed_2023_Jan_26_18-14-37/02uzUf1LilE_10/results/EMOCA/000001_000/detail.npy'
-	# readLandmarks(landmark, only_mouth=True, visualize=True)
-	shapecode, expcode, posecode, detail = readCoeff(shape_filepath, exp_filepath, pose_filepath, detail_filepath)
-	landmarks3d = get_Om(pose, shape, exp)
-	print(lendmarks3d)
+	# landmark = '/home/avocoral/MemFace/emoca/output/processed_2023_Jan_02_17-22-45/testvid/landmarks/000042_000.pkl'
+	# exp_filepath = '/mnt/sda/AVSpeech/video/GWwK4ak096M_9/000001_000/exp.npy'
+	# pose_filepath = '/mnt/sda/AVSpeech/video/GWwK4ak096M_9/000001_000/pose.npy'
+	# shape_filepath = '/mnt/sda/AVSpeech/video/GWwK4ak096M_9/000001_000/shape.npy'
+	# cam_filepath = '/mnt/sda/AVSpeech/video/GWwK4ak096M_9/000001_000/cam.npy'
+	# shapecode, expcode, posecode, camcode = readCoeff(shape_filepath, exp_filepath, pose_filepath, cam_filepath)
+	# print(f'dim of shape: {torch.from_numpy(shapecode).ndimension()}')
+	# print(f'dim of exp: {torch.from_numpy(expcode).ndimension()}')
+	# betas = torch.cat([torch.from_numpy(shapecode).unsqueeze(0), torch.from_numpy(expcode).unsqueeze(0)], dim=1)
+	# print(f'betas: {betas}')
+	# landmarks3d = get_Om(posecode, shapecode, expcode)
+	# print(landmarks3d)
+	move_files_around()
