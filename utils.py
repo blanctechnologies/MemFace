@@ -11,6 +11,7 @@ import torch
 import openmesh as om
 import trimesh
 import sys
+from datasets import Audio2ExpDataModule
 sys.path.insert(0, '/home/avocoral/MemFace/emoca')
 
 from gdl_apps.EMOCA.utils.load import load_model
@@ -19,6 +20,7 @@ from gdl.datasets.FaceVideoDataModule import TestFaceVideoDM
 from gdl_apps.EMOCA.utils.io import save_obj, save_images, save_codes, test, decode
 import os
 import shutil
+
 
 def readReconstruction(filepath):
 	f = np.load(filepath, allow_pickle=True)
@@ -116,32 +118,56 @@ def readObj(obj_filepath):
 	print(f'len: {mesh.vertices.shape}')
 	return None
 
-def move_files_around(coeff_dir='/mnt/sda/AVSpeech/video', metadata_dir='/mnt/sda/AVSpeech/metadata'):
+def move_files_around(coeff_dir='/mnt/sda/AVSpeech/video_xac', metadata_dir='/mnt/sda/AVSpeech/metadata_xac'):
+	faulty_vid_list = []
+	faulty_vid_counter = 0
 	for filename in os.listdir(coeff_dir):
-		# move metadata.pkl
-		shutil.move(os.path.join(coeff_dir, filename, 'metadata.pkl'), os.path.join(coeff_dir, filename, filename, 'metadata.pkl'))
-		# move folder with all metadata outside
-		shutil.move(os.path.join(coeff_dir, filename, filename), os.path.join(metadata_dir, filename))
+		try:
+			# move metadata.pkl
+			shutil.move(os.path.join(coeff_dir, filename, 'metadata.pkl'), os.path.join(coeff_dir, filename, filename, 'metadata.pkl'))
+			# move folder with all metadata outside
+			shutil.move(os.path.join(coeff_dir, filename, filename), os.path.join(metadata_dir, filename))
+		except Exception as e:
+			faulty_vid_counter += 1
+			faulty_vid_list.append(filename)
+	print(f'number of faulty vids, that werent moved: {faulty_vid_counter}')
+	print(f'faulty_vid_list: {faulty_vid_list}')
 
-def get_Om(pose, shape, exp):
+def get_Om(pose, shape, exp, emoca=None, batch_size=4):
 	"""
 	returns 3d coordinates of Flame model, based on pose, shape, exp
 	"""
 	path_to_models = "/home/avocoral/MemFace/emoca/assets/EMOCA/models"
 	model_name = 'EMOCA'
 	mode = 'detail'
-	emoca, conf = load_model(path_to_models, model_name, mode)
-	emoca.cuda()
-	emoca.eval()
-		
-	codedict = {}
-	codedict['shapecode'] = shape
-	codedict['expcode'] = exp
-	codedict['posecode'] = pose
-	verts, landmarks2d, landmarks3d = emoca.deca.flame(shape_params=torch.from_numpy(shape).unsqueeze(0).to('cuda:0'), expression_params=torch.from_numpy(exp).unsqueeze(0).to('cuda:0'),pose_params=torch.from_numpy(pose).unsqueeze(0).to('cuda:0'))
-
-	print(f'landmarks3d: {landmarks3d}')
-	return landmarks3d
+	
+	if emoca == None:
+		emoca, conf = load_model(path_to_models, model_name, mode)
+		emoca.cuda()
+		emoca.eval()
+	
+	if batch_size != 0:	
+		pose = torch.reshape(pose, (pose.shape[0]*pose.shape[1], pose.shape[2]))
+		shape = torch.reshape(shape, (shape.shape[0]*shape.shape[1], shape.shape[2]))
+		exp = torch.reshape(exp, (exp.shape[0]*exp.shape[1], exp.shape[2]))
+		print(f'pose.shape: {pose.shape}')
+		print(f'shape.shape: {shape.shape}')
+		print(f'exp.shape: {exp.shape}')
+		verts, landmarks2d, landmarks3d_hat = emoca.deca.flame(shape_params=shape, expression_params=exp, pose_params=pose)
+		# print(f'landmarks3d_hat.shape after get_Om: {landmarks3d_hat.shape}')
+		sequence_length = landmarks3d_hat.shape[0] // batch_size
+		landmarks3d_hat = landmarks3d_hat.view(batch_size, sequence_length, landmarks3d_hat.shape[1], landmarks3d_hat.shape[2])
+		# print(f'landmarks3d_hat.shape batched: {batched_landmarks3d_hat.shape}')
+	
+	else:
+		codedict = {}
+		codedict['shapecode'] = shape
+		codedict['expcode'] = exp
+		codedict['posecode'] = pose
+		verts, landmarks2d, landmarks3d_hat = emoca.deca.flame(shape_params=shape, expression_params=exp, pose_params=pose)
+	# 	print(f'landmarks3d: {landmarks3d}')
+	
+	return landmarks3d_hat
 
 
 if __name__ == '__main__':
@@ -158,3 +184,20 @@ if __name__ == '__main__':
 	# landmarks3d = get_Om(posecode, shapecode, expcode)
 	# print(landmarks3d)
 	move_files_around()
+	
+	# --- to load the dataloader and take the 1st batch ---
+	# datamodule = Audio2ExpDataModule()
+	# datamodule.setup()
+	# train_dataloader = datamodule.train_dataloader()	
+	# first_batch = next(iter(train_dataloader))
+	# 
+	# packed_audio_embed, packed_exp, packed_pose, packed_shape, packed_landmarks3d, sequence_lengths = first_batch
+
+	# audio_embed, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_audio_embed, batch_first=True)
+	# exp, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_exp, batch_first=True)
+	# pose, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_pose, batch_first=True)
+	# shape, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_shape, batch_first=True)
+	# landmarks3d, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_landmarks3d, batch_first=True)
+	# 
+	# landmarks3d_hat = get_Om(pose, shape, exp)
+	# print(f'landmarks_hat.shape: {landmarks3d_hat.shape}')

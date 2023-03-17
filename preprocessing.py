@@ -16,25 +16,26 @@ import sys
 from pathlib import Path
 from tqdm import auto
 import multiprocessing as mp
+import torch
 
 DATA_DIR = Path('/mnt/sda/AVSpeech')
-AUDIO_DIR = DATA_DIR / 'audio'
-AUDIO_ENCODINGS_DIR = DATA_DIR / 'audio_encodings'
-TRANSCRIPT_DIR = DATA_DIR / 'transcripts'
+AUDIO_DIR = DATA_DIR / 'audio_xac'
+AUDIO_ENCODINGS_DIR = DATA_DIR / 'audio_encodings_xac'
+TRANSCRIPT_DIR = DATA_DIR / 'transcripts_xac'
 
 
 sys.path.insert(0, '/home/avocoral/MemFace')
 # torch.random.manual_seed(42)
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# device = "cuda"
+device = "cuda"
 num_workers = 6
 sample_rate = 16000
 
 def extract_audio():
 	# extracts .wav audio from .mp4 files and moves all into one dir
-	DATA_DIR = Path('/mnt/sda/AVSpeech/clips_unpacked_test/xaa')
-	OUTPUT_DIR = '/mnt/sda/AVSpeech/audio'
+	DATA_DIR = Path('/mnt/sda/AVSpeech/clips_unpacked_test/xac')
+	OUTPUT_DIR = '/mnt/sda/AVSpeech/audio_xac'
 
 	k = 0
 	j = 0
@@ -159,7 +160,7 @@ def get_files_multiface(filepath, worker_id, fa=None):
 			print(f"frame {i}, num of faces: {len(bboxes)}")
 			if len(bboxes) > 1:
 				print(f"this file {filepath} has multiple faces")
-				with open(f'/home/avocoral/MemFace/multiface_xab/multiface_xab_{worker_id}', 'a') as f:
+				with open(f'/home/avocoral/MemFace/multiface_xac/multiface_xac_{worker_id}.txt', 'a') as f:
 					f.write(f'{filepath}\n')
 				return True
 			return False
@@ -169,7 +170,7 @@ def get_files_multiface(filepath, worker_id, fa=None):
 def get_files_multiface_worker(worker_id):
 	num_workers = 16
 	fa = face_alignment.FaceAlignment(face_alignment.LandmarksType._2D, flip_input=False, device='cpu')
-	root_dir = '/mnt/sda/AVSpeech/clips_unpacked_test/xab/'
+	root_dir = '/mnt/sda/AVSpeech/clips_unpacked_test/xac/'
 	num_folders = len(os.listdir(root_dir)) // num_workers
 	for i, folder in enumerate(os.listdir(root_dir)):
 		if i % num_workers == worker_id and folder != '.DS_Store':
@@ -192,17 +193,20 @@ def get_files_multiface_scheduler():
 
 
 def assemble_list(dir_name):
-	result_filename = '/home/avocoral/MemFace/multiface_xab.txt'
+	result_filename = '/home/avocoral/MemFace/multiface_xac.txt'
 	result = ''
 	total_number_of_files = 0
 	result_list = []
 	for filename in os.listdir(dir_name):
 		with open(os.path.join(dir_name, filename)) as f:
-			text = f.readline()
-			filenames_noext = text.split('.mp4')
+			text = f.readlines()
+			print(f'text len: {len(text)}')
+			filenames_noext = [name.split('.mp4')[0] for name in text]
+			print(f'filenames_noext: {filenames_noext}')
 			last_occurrence = ''
 			for name in filenames_noext:
 				total_number_of_files += 1
+				
 				new_name = name.rsplit("/", 1)[0]
 				if new_name != last_occurrence and new_name != '' and new_name != None:
 					result += f'{new_name}\n'
@@ -215,8 +219,8 @@ def assemble_list(dir_name):
 	
 	return result_list
 
-def readFPSDatacard(filepath = '/home/avocoral/super8/Stoven/fps_xaa.txt'):
-		total_number_of_files = len(os.listdir('/mnt/sda/AVSpeech/clips_unpacked_test/xaa'))
+def readFPSDatacard(filepath = '/home/avocoral/super8/Stoven/fps_xac.txt'):
+		total_number_of_files = len(os.listdir('/mnt/sda/AVSpeech/clips_unpacked_test/xac'))
 		with open(filepath, 'r') as f:
 			# last_line = len(f.readlines())
 			not30fps = []
@@ -238,18 +242,18 @@ def readFPSDatacard(filepath = '/home/avocoral/super8/Stoven/fps_xaa.txt'):
 			
 def get_all_faulty_vids():
 	multiface_vid = []
-	with open('/home/avocoral/MemFace/multiface_xaa.txt', 'r') as f:
+	with open('/home/avocoral/MemFace/multiface_xac.txt', 'r') as f:
 		for filename in f.readlines():
 			multiface_vid.append(filename[:-1].rsplit('/', 1)[1])
 	
-	total_number_of_files = len(os.listdir('/mnt/sda/AVSpeech/clips_unpacked_test/xaa'))
+	total_number_of_files = len(os.listdir('/mnt/sda/AVSpeech/clips_unpacked_test/xac'))
 	not30fps = readFPSDatacard()
 	total_faulty_vids = list(dict.fromkeys(multiface_vid + not30fps))
 	print(f'total faulty vid len: {len(total_faulty_vids)}/{total_number_of_files}')
 	print(f'multiface_vid[0]: {multiface_vid[0]}')
 	print(f'not30fps[0]: {not30fps[0]}')
-	preprocessed_vids_dir = '/mnt/sda/AVSpeech/video'
-	faulty_xab_dir = '/mnt/sda/AVSpeech/xaa_faulty'
+	preprocessed_vids_dir = '/mnt/sda/AVSpeech/video_xac'
+	faulty_dir = '/mnt/sda/AVSpeech/xac_faulty'
 	preprocessed_vids = os.listdir(preprocessed_vids_dir)
 	faulty_preprocessed_vids = []
 	for filename in preprocessed_vids:
@@ -263,7 +267,7 @@ def get_all_faulty_vids():
 	i = 0
 	for filename in faulty_preprocessed_vids:
 		location = os.path.join(preprocessed_vids_dir, filename)
-		destination = os.path.join(faulty_xab_dir, filename)
+		destination = os.path.join(faulty_dir, filename)
 		subprocess.run([f'mv {location} {destination}'], shell=True)
 		print(f'{i}/{len(faulty_preprocessed_vids)} has been moved')
 		i+=1
@@ -304,6 +308,26 @@ def video_length_seconds(filename):
 		raise ValueError(result.stderr.rstrip("\n"))
 
 
+def count_all_clean_data():
+	clean_data_xaa_dir = '/mnt/sda/AVSpeech/video'
+	video_data_xaa_dir = '/mnt/sda/AVSpeech/clips_unpacked/xaa'
+	clean_data_xab_dir = '/mnt/sda/AVSpeech/video_extra'
+	video_data_xab_dir = '/mnt/sda/AVSpeech/clips_unpacked/xab'
+	clean_data_xac_dir = '/mnt/sda/AVSpeech/video_xac'
+	video_data_xac_dir = '/mnt/sda/AVSpeech/clips_unpacked/xac'
+
+	clean_data = [clean_data_xaa_dir, clean_data_xab_dir, clean_data_xac_dir]
+	video_data = [video_data_xaa_dir, video_data_xab_dir, video_data_xac_dir]
+	total_time = 0
+	for clean_data_dir, video_data_dir in zip(clean_data, video_data):
+		print('next dir:', clean_data_dir, video_data_dir)
+		for foldername in os.listdir(clean_data_dir):
+			subfolder_name = foldername.rsplit('_', 1)[0]
+			video_file = os.path.join(video_data_dir, subfolder_name, foldername+'.mp4')
+			video_length = video_length_seconds(video_file)
+			total_time += int(video_length)
+			print(f'video_file: {video_file}, video_length: {video_length}')
+	print(f'total_time {total_time}')	
 
 def face_mask(root_dir):
 	return None
@@ -321,16 +345,18 @@ if __name__ == '__main__':
 	# get_files_multiface('/mnt/sda/AVSpeech/clips_unpacked_test/xaa/02uzUf1LilE/02uzUf1LilE_0.mp4')
 	# get_files_multiface_scheduler()
 	# print(f"starting to assemble the list")
-	# assemble_list(dir_name='/home/avocoral/MemFace/multiface_xab')
+	# assemble_list(dir_name='/home/avocoral/MemFace/multiface_xac')
+	
 	# readFPSDatacard()
-	# all_faulty_files = get_faulty_video_list()
+	# all_faulty_files = get_all_faulty_vids()
 	# file_dir = ""
 	# get_faulty_existing_video_list(all_faulty_files, file_dir)
 	# get_all_faulty_vids()
-	preprocessed_vids_dir = '/mnt/sda/AVSpeech/video_extra'
-	orig_dir = '/mnt/sda/AVSpeech/clips_unpacked_test/xab' 
-	get_dataset_length(preprocessed_vids_dir, orig_dir)
-
+	# preprocessed_vids_dir = '/mnt/sda/AVSpeech/video_extra'
+	# orig_dir = '/mnt/sda/AVSpeech/clips_unpacked_test/xab' 
+	# get_dataset_length(preprocessed_vids_dir, orig_dir)
+	
+	count_all_clean_data()
 
 
 

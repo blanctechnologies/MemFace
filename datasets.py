@@ -60,7 +60,7 @@ class Audio2ExpDataset(Dataset):
 
 
 class Audio2ExpDataModule(pl.LightningDataModule):
-		def __init__(self, audio_dir: str = '/mnt/sda/AVSpeech/audio_encodings', coeff_dir: str = '/mnt/sda/AVSpeech/video', batch_size: int = 1):
+		def __init__(self, audio_dir: str = '/mnt/sda/AVSpeech/audio_encodings', coeff_dir: str = '/mnt/sda/AVSpeech/video', batch_size: int = 4):
 				super().__init__()
 				self.audio_dir = audio_dir
 				self.coeff_dir = coeff_dir

@@ -1,6 +1,7 @@
 import os
 import json
 from typing import List
+import math
 
 import torch
 import hydra
@@ -16,6 +17,11 @@ from utils import get_Om
 
 from datasets import Audio2ExpDataModule
 
+from emoca.gdl_apps.EMOCA.utils.load import load_model
+from emoca.gdl.utils.FaceDetector import FAN
+from emoca.gdl.datasets.FaceVideoDataModule import TestFaceVideoDM
+from emoca.gdl_apps.EMOCA.utils.io import save_obj, save_images, save_codes, test, decode
+
 wandb_logger = WandbLogger(name='Audio2Exp',project='MemFace')
 pl.seed_everything(42, workers=True)
  #torch.backends.cudnn.determinstic = True
@@ -26,9 +32,11 @@ class Audio2Exp(pl.LightningModule):
 	def __init__(self):
 		super().__init__()
 		# self.save_hyperparameters()
-		self.keys = nn.Embedding(M, d_k)
-		self.values = nn.Embedding(M, d_v)
-
+		# self.keys = nn.Embedding(M, d_k)
+		# self.values = nn.Embedding(M, d_v)
+		
+		self.keys = torch.nn.Parameter(torch.nn.init.xavier_uniform_(torch.empty(1000, 64)))
+		self.values = torch.nn.Parameter(torch.nn.init.xavier_uniform_(torch.empty(1000, 64)))
 		self.M = 1000 # number of keys and values => output of f_enc is 1000
 		self.d_k = 64
 		self.d_v = 64
@@ -38,9 +46,15 @@ class Audio2Exp(pl.LightningModule):
 		self.implicitmem = ImplicitMem(self.keys, self.values)
 		self.decoder = Decoder() 
 
-	def forward(self, audio_embed, sequence_lengths):
-		encoded_audiofeature = self.encoder(audio_embed, sequence_lengths)
-		output = self.decoder(encoded_audiofeature + self.implicitmem(encoded_audiofeature, sequence_lengths), sequence_lengths)
+	def forward(self, packed_audio_embed):
+
+		audiofeature = self.encoder(packed_audio_embed)
+		# encoded_audiofeature is packed, cause it's easier, we need to unpack it
+				
+		unpacked_audiofeature, lengths = torch.nn.utils.rnn.pad_packed_sequence(audiofeature, batch_first=True)
+		print(f'unpacked_audiofeature after encoding and padding packed seq: {unpacked_audiofeature.shape}')
+		# implicitmem will unpack audiofeature and return unpacked result
+		output = self.decoder(unpacked_audiofeature + self.implicitmem(audiofeature), lengths)
 		return output
 
 	def training_step(self, batch, batch_idx):
@@ -71,20 +85,30 @@ class Audio2Exp(pl.LightningModule):
 		packed_landmarks3d = packed_landmarks3d.to(device)
 
 
-		padded_audio_embed, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_audio_embed, batch_first=True)
-		padded_exp, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_exp, batch_first=True)
-		padded_pose, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_pose, batch_first=True)
-		padded_shape, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_shape, batch_first=True)
-		padded_landmarks3d, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_landmarks3d, batch_first=True)
-		
+		audio_embed, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_audio_embed, batch_first=True)
+		exp, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_exp, batch_first=True)
+		pose, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_pose, batch_first=True)
+		shape, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_shape, batch_first=True)
+		landmarks3d, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_landmarks3d, batch_first=True)
+		print(f'training loop audio_embed.shape: {audio_embed.shape}')	
 		# audio_embed, exp, pose, shape, landmarks3d = batch.to(device)
-		exp_hat = self(audio_embed, sequence_length)
+		exp_hat = self(packed_audio_embed)
+		# exp_hat, lengths = torch.nn.utils.rnn.pad_packed_sequence(packed_exp_hat, batch_first=True)
 		
-		l2_exp = torch.nn.MSELoss(exp_hat, exp)
-		landmarks3d_hat = get_Om(pose, shape, exp_hat)
+		mse_loss = torch.nn.MSELoss()	
+		l2_exp = mse_loss(exp_hat, exp)
+		print(f'training loop pose.shape after forward pass and before get_Om: {pose.shape}')
+		landmarks3d_hat = get_Om(pose, shape, exp_hat, emoca, batch_size=4)
 		# landmarks3d_hat = landmarks3d
-		l2_vtx = torch.nn.MSELoss(landamrks3d_hat, landmarks3d) # dim(Om) = T × h_v × 3
-		lmem_reg = 1/(self.m*(self.m - 1))*(torch.sum(pairwise_cosine_similarity(self.keys, reduction='sum')) + torch.sum(pairwise_cosine_similarity(self.values, reduction='sum')))
+		print(f'training loop landmarks3d.shape before squeeze: {landmarks3d.shape}')
+		landmarks3d = torch.squeeze(landmarks3d, 2)
+		print('---- after get_Om ----')
+		print(f'training loop landmarks3d.shape after squezze: {landmarks3d.shape}')
+		print(f'training loop landmarks3d_hat.shape: {landmarks3d_hat.shape}')
+		l2_vtx = mse_loss(landmarks3d_hat, landmarks3d) # dim(Om) = T × h_v × 3
+		corr_keys = F.cosine_similarity(self.keys.unsqueeze(1), self.keys.unsqueeze(0), dim=-1)
+		corr_values = F.cosine_similarity(self.values.unsqueeze(1), self.values.unsqueeze(0), dim=-1)
+		lmem_reg = 1/(self.M*(self.M - 1))*(torch.sum(corr_keys) + torch.sum(corr_values))
 
 		loss = l2_exp + l2_vtx + 0.1 * lmem_reg
 		self.log("loss", loss) 
@@ -92,16 +116,40 @@ class Audio2Exp(pl.LightningModule):
 		return loss
 
 	def validation_step(self, batch, batch_idx):
-		audio_embed, exp, pose, shape, landmarks3d = batch
-		exp_hat = self(audio_embed)
-		
-		l2_exp = torch.nn.MSELoss(exp_hat, exp)
-		landmarks3d_hat = get_Om(pose, shape, exp_hat)
-		l2_vtx = torch.nn.MSELoss(landamrks3d_hat, landmarks3d) # dim(Om) = T × h_v × 3
-		lmem_reg = 1/(self.m*(self.m - 1))*(torch.sum(pairwise_cosine_similarity(self.keys, reduction='sum')) + torch.sum(pairwise_cosine_similarity(self.values, reduction='sum')))
+		packed_audio_embed, packed_exp, packed_pose, packed_shape, packed_landmarks3d, sequence_lengths = batch
+		packed_audio_embed = packed_audio_embed.to(device)
+		packed_exp = packed_exp.to(device)
+		packed_pose = packed_pose.to(device)
+		packed_shape = packed_shape.to(device)
+		packed_landmarks3d = packed_landmarks3d.to(device)
 
-		val_loss = l2_exp + l2_vtx + 0.1 * lmem_reg
-		self.log("val_loss", val_loss)
+
+		audio_embed, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_audio_embed, batch_first=True)
+		exp, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_exp, batch_first=True)
+		pose, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_pose, batch_first=True)
+		shape, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_shape, batch_first=True)
+		landmarks3d, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_landmarks3d, batch_first=True)
+		
+		# audio_embed, exp, pose, shape, landmarks3d = batch.to(device)
+		print(f'val audio_embed.shape before forward pass: {audio_embed.shape}')
+		exp_hat = self(packed_audio_embed)
+		# exp_hat, lengths = torch.nn.utils.rnn.pad_packed_sequence(packed_exp_hat, batch_first=True)
+		landmarks3d = torch.squeeze(landmarks3d, 2)	
+		mse_loss = torch.nn.MSELoss()	
+		l2_exp = mse_loss(exp_hat, exp)
+		print(f'val pose.shape after forward pass and before get_Om: {pose.shape}')
+		landmarks3d_hat = get_Om(pose, shape, exp_hat, emoca, batch_size=4)
+		# landmarks3d_hat = landmarks3d
+		print(f'val landmarks3d_hat.shape after get_Om(): {landmarks3d_hat.shape}')
+		print(f'val landmarks3d.shape after self(exp): {landmarks3d.shape}')
+		l2_vtx = mse_loss(landmarks3d_hat, landmarks3d) # dim(Om) = T × h_v × 3
+		corr_keys = F.cosine_similarity(self.keys.unsqueeze(1), self.keys.unsqueeze(0), dim=-1)
+		corr_values = F.cosine_similarity(self.values.unsqueeze(1), self.values.unsqueeze(0), dim=-1)
+		lmem_reg = 1/(self.M*(self.M - 1))*(torch.sum(corr_keys) + torch.sum(corr_values))
+
+		loss = l2_exp + l2_vtx + 0.1 * lmem_reg
+		self.log("val_loss", loss) 
+		
 
 	def configure_optimizers(self):
 		# 1e-4 training, 5e-6 adaptation(200 epoch)
@@ -117,25 +165,48 @@ class ImplicitMem(nn.Module):
 		self.values = values
 		self.d_k = d_k
 		self.d_v = d_v
-		self.w_q = nn.Linear(d_model, d_k, bias=False)
-		self.w_k = nn.Linear(d_model, d_k, bias=False)
-		self.w_v = nn.Linear(d_model, d_v, bias=False)
-		self.w_o = nn.Linear(d_model, d_v, bias=False)
-
+		
+		self.w_q = nn.Parameter(torch.randn(1, 64))
+		self.w_k = nn.Parameter(torch.randn(1, 64))
+		self.w_v = nn.Parameter(torch.randn(1, 64))
+		self.w_o = nn.Parameter(torch.randn(1, 64))
 		self.dropout = nn.Dropout(dropout)
 
-	def forward(self, query, sequence_lengths):
-		q = self.w_q(query)
-		k = self.w_k(self.keys)
-		v = self.w_v(self.values)
-
+	def forward(self, query):
+		# if query is a frame of a sequence, but not a sequence, we need to rewrite that
+		# query right now is a batch of sequences: [batch_size, max_seq_len, dim=64] and it's unpacked
+		q_list_unpacked, lengths = torch.nn.utils.rnn.pad_packed_sequence(query, batch_first=True)
+		max_len = lengths.max()
+		# - flatten the q_list into [batch_size*max_seq_len, dim]
+		# lengths: [batch_size]
+		# you can double check what's the shape of q_list_unpacked
+		print(f'q_list_unpacked.shape in ImplicitMem: {q_list_unpacked.shape}')
+		q_list_unpacked_flat = q_list_unpacked.reshape(-1, 64)	
+		print(f'q_list_unpacked and reshaped into 2d matrix in ImplicitMem: {q_list_unpacked_flat.shape}')
+		q = q_list_unpacked_flat * self.w_q
+		k = self.keys * self.w_k
+		v = self.values * self.w_v
+		# - mask needs to be applied as well for scoresd
+		# ? is k.transpose(-2, -1) same as k.T
+		
+		# ? how to get mask
+		# - perhaps we need to use lengths
+		# if we matmul padded tensors in q with k, it will zero out
 		scores = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.d_k, dtype=torch.float))
+		
+		# and for softmax we do need mask, the mask will set the padded elements to a very large negative value
+		mask = (scores != 0).float()
 		attention_weights = torch.softmax(scores, dim=-1)
 		attention = torch.matmul(attention_weights, v)
-		output = self.w_o(attention)
+		output = attention * self.w_o
 		output = self.dropout(attention)
 		
-		return output
+		# do we need to unflatten the output of dim (q_len_flat, 64) back into batches?
+		# batch_size = self.batch_size
+		batch_size = 4
+		print(f'output.shape inside ImplicitMem: {output.shape}')
+		orig_shape_output = output.view(batch_size, max_len, 64)
+		return orig_shape_output
 
 
 class Encoder(nn.Module):
@@ -143,42 +214,57 @@ class Encoder(nn.Module):
 		super().__init__()
 		# change input accordingly to the size of the audio embedding 29 -> ?
 		# Q1: should there be Relu between Linear and LayerNorm
-		self.l1 = nn.Linear(329, 64)
+		self.l1 = nn.Linear(392, 64)
 		self.relu = nn.ReLU()
 		self.layernorm = nn.LayerNorm(64)
 		self.dropout = nn.Dropout()
 		self.pos_encoding = DynamicPositionalEncoding()
 	
-	def forward(self, x, sequence_lengths):
-		x = self.l1(x)
-
-		return output
+	def forward(self, x):
+		unpacked_data, lengths = torch.nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
+		print(f'lengths: {lengths}')
+		print(f'lengths.shape: {lengths.shape}')
+		print(f'unpacked_data.shape: {unpacked_data.shape}')
+		x = self.l1(unpacked_data)
+		print(f'x.shape after l1: {x.shape}')
+		x = self.relu(x)
+		print(f'x.shape after relu: {x.shape}')
+		x = self.layernorm(x)
+		x = self.dropout(x)
+		x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths, batch_first=True)
+		x = self.pos_encoding(x)
+	
+		return x
 
 
 class DynamicPositionalEncoding(nn.Module):
 	def __init__(self, d_model=64, dropout=0.1, max_len=5000):
 		super().__init__()
 		self.dropout = nn.Dropout(p=dropout)
-		self.d_model = d_model
 		self.max_len = max_len
-
-
-	def forward(self, x):
-		# x.shape should be = (batch_size, seq_len, d_model=64)
-		print(f'positional encoding forward(): x.shape = {x.shape}')
-		sequence_length = x.size(1)
-		position = torch.arange(sequence_length, dtype=torch.float).unsqueeze(1)
-		div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-(math.log(10000.0) / d_model)))
-		pe = torch.zeros(sequence_length, d_model)
+		self.d_model = d_model
+		position = torch.arange(max_len).unsqueeze(1)
+		div_term = torch.exp(torch.arange(0, d_model, 2) * -(math.log(10000.0) / d_model))
+		pe = torch.zeros(max_len, d_model)
 		pe[:, 0::2] = torch.sin(position * div_term)
 		pe[:, 1::2] = torch.cos(position * div_term)
 		pe = pe.unsqueeze(0)
-		x = x + pe
-		result = self.dropout(x)
-		# result.shape should be = (batch_size, seq_len, d_model=64)
-		print(f'positional encoding forward(): result.shape = {result.shape}')
+		self.register_buffer('pe', pe)
 
-		return result
+	def forward(self, packed_seq):
+		# Extract the data and lengths from the PackedSequence
+		data, lengths = torch.nn.utils.rnn.pad_packed_sequence(packed_seq, batch_first=True)
+		
+		# Add the positional encoding to the data tensor
+		pos_enc = self.pe[:, :data.size(1)]
+		pos_enc = pos_enc.to(device=data.device)
+		data = data + pos_enc
+		print(f'x.shape after encoding, but before encoder packing: {data.shape}')
+		
+		# Pack the data tensor back into a PackedSequence
+		packed_seq = torch.nn.utils.rnn.pack_padded_sequence(data, lengths, batch_first=True)
+		return packed_seq
+
 
 class Decoder(nn.Module):
 	def __init__(self, d_model=64, nhead=1, num_layers=2):
@@ -187,9 +273,16 @@ class Decoder(nn.Module):
 		encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead)
 		self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 		self.fc = nn.Linear(d_model, 50)
-	def forward(self, x):
+	def forward(self, x, sequence_lengths):
+		# pack the padded sequences back into PackedSequence, since transformer encoder can operate on them
+		# sorted_sequence_lengths, sorted_indices = torch.sort(sequence_lengths, descending=True)
+		# sorted_padded_sequences = x[sorted_indices]
+		# packed_sequences = torch.nn.utils.rnn.pack_padded_sequence(sorted_padded_sequences, lengths=sorted_sequence_lengths, batch_first=True)
 		x = self.transformer_encoder(x)
+		# now we need to unpack the x, since fc only works on unpacked sequences
+		# x, lenghts = torch.nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
 		x = self.fc(x)
+		# x = pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
 		return x
 
 
@@ -206,16 +299,25 @@ if __name__ == '__main__':
 		d_v = 64
 		M = 1000
 
-
+		torch.cuda.empty_cache()
 		torch.multiprocessing.set_start_method('spawn')
 		audio2exp = Audio2Exp()
 		datamodule = Audio2ExpDataModule()
 		datamodule.setup()
 		train_dataloader = datamodule.train_dataloader()
 		val_dataloader = datamodule.val_dataloader()
+		
+		path_to_models = "/home/avocoral/MemFace/emoca/assets/EMOCA/models"
+		model_name = 'EMOCA'
+		mode = 'detail'
+
+		emoca, conf = load_model(path_to_models, model_name, mode)
+		emoca.cuda()
+		emoca.eval()
 
 		# callbacks=[EarlyStopping(monitor="val_loss", mode="min")], 
-		trainer = pl.Trainer(fast_dev_run=True, logger=wandb_logger, devices=1, accelerator="gpu")
+		# fast_dev_run=True,
+		trainer = pl.Trainer(default_root_dir='checkpoints', callbacks=[EarlyStopping(monitor="val_loss", mode="min")], logger=wandb_logger, devices=1, accelerator="gpu")
 		trainer.fit(audio2exp, train_dataloader, val_dataloader)
 
 
