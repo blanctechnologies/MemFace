@@ -39,7 +39,11 @@ class Audio2ExpDataset(Dataset):
 						exp.append(torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'exp.npy'))))
 						pose.append(torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'pose.npy'))))
 						shape.append(torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'shape.npy'))))
-						Om.append(torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'landmarks3d.npy'))))
+						Om_frame = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'landmarks3d.npy')))
+						# print(f'landmarks_frame.shape: {Om_frame.shape}')
+						Om.append(torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'landmarks3d.npy')))[:, 48:, :])
+				
+				# print(f'Om[0].shape: {Om[0].shape}')
 						
 				exp = torch.stack(exp)
 				pose = torch.stack(pose)
@@ -60,7 +64,7 @@ class Audio2ExpDataset(Dataset):
 
 
 class Audio2ExpDataModule(pl.LightningDataModule):
-		def __init__(self, audio_dir: str = '/mnt/sda/AVSpeech/audio_encodings', coeff_dir: str = '/mnt/sda/AVSpeech/video', batch_size: int = 4):
+		def __init__(self, audio_dir: str = '/mnt/sda/AVSpeech/audio_encodings', coeff_dir: str = '/mnt/sda/AVSpeech/video', batch_size: int = 16):
 				super().__init__()
 				self.audio_dir = audio_dir
 				self.coeff_dir = coeff_dir
@@ -76,10 +80,10 @@ class Audio2ExpDataModule(pl.LightningDataModule):
 						# self.train = AVSpeech
 
 		def train_dataloader(self):
-				return DataLoader(self.train, batch_size=self.batch_size, num_workers=16, collate_fn=self.collate_fn)
+				return DataLoader(self.train, batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, drop_last=True)
 
 		def val_dataloader(self):
-				return DataLoader(self.val, batch_size=self.batch_size, num_workers=16, collate_fn=self.collate_fn)
+				return DataLoader(self.val, batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, drop_last=True)
 		
 		def collate_fn(self, batch):
 				batch = sorted(batch, key=lambda x: len(x[0]), reverse=True)

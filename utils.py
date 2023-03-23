@@ -133,7 +133,7 @@ def move_files_around(coeff_dir='/mnt/sda/AVSpeech/video_xac', metadata_dir='/mn
 	print(f'number of faulty vids, that werent moved: {faulty_vid_counter}')
 	print(f'faulty_vid_list: {faulty_vid_list}')
 
-def get_Om(pose, shape, exp, emoca=None, batch_size=4):
+def get_Om(pose, shape, exp, emoca=None, batch_size=16):
 	"""
 	returns 3d coordinates of Flame model, based on pose, shape, exp
 	"""
@@ -154,10 +154,11 @@ def get_Om(pose, shape, exp, emoca=None, batch_size=4):
 		print(f'shape.shape: {shape.shape}')
 		print(f'exp.shape: {exp.shape}')
 		verts, landmarks2d, landmarks3d_hat = emoca.deca.flame(shape_params=shape, expression_params=exp, pose_params=pose)
-		# print(f'landmarks3d_hat.shape after get_Om: {landmarks3d_hat.shape}')
+		print(f'landmarks3d_hat.shape after get_Om: {landmarks3d_hat.shape}')
 		sequence_length = landmarks3d_hat.shape[0] // batch_size
 		landmarks3d_hat = landmarks3d_hat.view(batch_size, sequence_length, landmarks3d_hat.shape[1], landmarks3d_hat.shape[2])
-		# print(f'landmarks3d_hat.shape batched: {batched_landmarks3d_hat.shape}')
+		print(f'landmarks3d_hat.shape batched: {landmarks3d_hat.shape}')
+		landmarks3d_hat = landmarks3d_hat[:,:,48:,:]
 	
 	else:
 		codedict = {}

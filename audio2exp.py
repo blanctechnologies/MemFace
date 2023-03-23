@@ -98,7 +98,7 @@ class Audio2Exp(pl.LightningModule):
 		mse_loss = torch.nn.MSELoss()	
 		l2_exp = mse_loss(exp_hat, exp)
 		print(f'training loop pose.shape after forward pass and before get_Om: {pose.shape}')
-		landmarks3d_hat = get_Om(pose, shape, exp_hat, emoca, batch_size=4)
+		landmarks3d_hat = get_Om(pose, shape, exp_hat, emoca, batch_size=16)
 		# landmarks3d_hat = landmarks3d
 		print(f'training loop landmarks3d.shape before squeeze: {landmarks3d.shape}')
 		landmarks3d = torch.squeeze(landmarks3d, 2)
@@ -138,7 +138,8 @@ class Audio2Exp(pl.LightningModule):
 		mse_loss = torch.nn.MSELoss()	
 		l2_exp = mse_loss(exp_hat, exp)
 		print(f'val pose.shape after forward pass and before get_Om: {pose.shape}')
-		landmarks3d_hat = get_Om(pose, shape, exp_hat, emoca, batch_size=4)
+		landmarks3d_hat = get_Om(pose, shape, exp_hat, emoca, batch_size=16)
+		
 		# landmarks3d_hat = landmarks3d
 		print(f'val landmarks3d_hat.shape after get_Om(): {landmarks3d_hat.shape}')
 		print(f'val landmarks3d.shape after self(exp): {landmarks3d.shape}')
@@ -148,7 +149,9 @@ class Audio2Exp(pl.LightningModule):
 		lmem_reg = 1/(self.M*(self.M - 1))*(torch.sum(corr_keys) + torch.sum(corr_values))
 
 		loss = l2_exp + l2_vtx + 0.1 * lmem_reg
-		self.log("val_loss", loss) 
+		self.log("val_loss", loss)
+		print(f'TRAINING LOOP LEFTOVERS:{torch.cuda.ipc_collect()}') 
+		torch.cuda.ipc_collect()
 		
 
 	def configure_optimizers(self):
@@ -166,9 +169,9 @@ class ImplicitMem(nn.Module):
 		self.d_k = d_k
 		self.d_v = d_v
 		
-		self.w_q = nn.Parameter(torch.randn(1, 64))
-		self.w_k = nn.Parameter(torch.randn(1, 64))
-		self.w_v = nn.Parameter(torch.randn(1, 64))
+		self.w_q = nn.Parameter(torch.randn(64, 64))
+		self.w_k = nn.Parameter(torch.randn(64, 64))
+		self.w_v = nn.Parameter(torch.randn(64, 64))
 		self.w_o = nn.Parameter(torch.randn(1, 64))
 		self.dropout = nn.Dropout(dropout)
 
@@ -183,9 +186,9 @@ class ImplicitMem(nn.Module):
 		print(f'q_list_unpacked.shape in ImplicitMem: {q_list_unpacked.shape}')
 		q_list_unpacked_flat = q_list_unpacked.reshape(-1, 64)	
 		print(f'q_list_unpacked and reshaped into 2d matrix in ImplicitMem: {q_list_unpacked_flat.shape}')
-		q = q_list_unpacked_flat * self.w_q
-		k = self.keys * self.w_k
-		v = self.values * self.w_v
+		q = torch.matmul(q_list_unpacked_flat, self.w_q)
+		k = torch.matmul(self.keys, self.w_k)
+		v = torch.matmul(self.values, self.w_v)
 		# - mask needs to be applied as well for scoresd
 		# ? is k.transpose(-2, -1) same as k.T
 		
@@ -203,7 +206,7 @@ class ImplicitMem(nn.Module):
 		
 		# do we need to unflatten the output of dim (q_len_flat, 64) back into batches?
 		# batch_size = self.batch_size
-		batch_size = 4
+		batch_size = 16
 		print(f'output.shape inside ImplicitMem: {output.shape}')
 		orig_shape_output = output.view(batch_size, max_len, 64)
 		return orig_shape_output
@@ -300,7 +303,7 @@ if __name__ == '__main__':
 		M = 1000
 
 		torch.cuda.empty_cache()
-		torch.multiprocessing.set_start_method('spawn')
+		# torch.multiprocessing.set_start_method('spawn')
 		audio2exp = Audio2Exp()
 		datamodule = Audio2ExpDataModule()
 		datamodule.setup()
