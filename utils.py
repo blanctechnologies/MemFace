@@ -8,11 +8,11 @@ from torchvision.utils import draw_keypoints, save_image
 from torchvision.transforms.functional import pil_to_tensor
 import torchvision.transforms.functional as F
 import torch
-import openmesh as om
-import trimesh
+# import openmesh as om
+# import trimesh
 import sys
 from datasets import Audio2ExpDataModule
-sys.path.insert(0, '/home/avocoral/MemFace/emoca')
+sys.path.insert(0, 'root/MemFace/emoca')
 
 from gdl_apps.EMOCA.utils.load import load_model
 from gdl.utils.FaceDetector import FAN
@@ -75,7 +75,7 @@ def readLandmarks(landmark_filepath, only_mouth = False, visualize = False):
 		print(img.to(torch.uint8))
 		final_image_test = F.to_pil_image(img.to(torch.uint8))
 		final_image_test.save('final_image_test.jpg', quality=95)
-		res = draw_keypoints(img.to(torch.uint8), keypoints, colors='white', connectivity = mouth_connections, radius=0, width=1)
+		# res = draw_keypoints(img.to(torch.uint8), keypoints, colors='white', connectivity = mouth_connections, radius=0, width=1)
 		vis_name = f'vis_{random.randint(100000,999999)}.jpg'
 		final_image = F.to_pil_image(res)
 		# save_image(final_image, vis_name)
@@ -134,11 +134,11 @@ def move_files_around(coeff_dir='/mnt/sda/AVSpeech/video_xac', metadata_dir='/mn
 	print(f'number of faulty vids, that werent moved: {faulty_vid_counter}')
 	print(f'faulty_vid_list: {faulty_vid_list}')
 
-def get_Om(pose, shape, exp, emoca=None, batch_size=16):
+def get_Om(pose, shape, exp, emoca=None, batch_size=64):
 	"""
 	returns 3d coordinates of Flame model, based on pose, shape, exp
 	"""
-	path_to_models = "/home/avocoral/MemFace/emoca/assets/EMOCA/models"
+	path_to_models = "root/MemFace/emoca/assets/EMOCA/models"
 	model_name = 'EMOCA'
 	mode = 'detail'
 	
