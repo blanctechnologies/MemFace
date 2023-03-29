@@ -108,11 +108,11 @@ class Audio2ExpDataModule(pl.LightningDataModule):
 				
 				device = 'cuda:0'
 
-				packed_audio_embed = torch.nn.utils.rnn.pack_padded_sequence(padded_audio_embed, audio_embed_lengths, batch_first=True, enforce_sorted=False).to(device)
-				packed_exp = torch.nn.utils.rnn.pack_padded_sequence(padded_exp, exp_lengths, batch_first=True, enforce_sorted=False).to(device)
-				packed_pose = torch.nn.utils.rnn.pack_padded_sequence(padded_pose, pose_lengths, batch_first=True, enforce_sorted=False).to(device)
-				packed_shape = torch.nn.utils.rnn.pack_padded_sequence(padded_shape, shape_lengths, batch_first=True, enforce_sorted=False).to(device)
-				packed_landmarks3d = torch.nn.utils.rnn.pack_padded_sequence(padded_landmarks3d, landmarks3d_lengths, batch_first=True, enforce_sorted=False).to(device)
+				packed_audio_embed = torch.nn.utils.rnn.pack_padded_sequence(padded_audio_embed, audio_embed_lengths, batch_first=True, enforce_sorted=False).to(torch.cuda.current_device())
+				packed_exp = torch.nn.utils.rnn.pack_padded_sequence(padded_exp, exp_lengths, batch_first=True, enforce_sorted=False).to(torch.cuda.current_device())
+				packed_pose = torch.nn.utils.rnn.pack_padded_sequence(padded_pose, pose_lengths, batch_first=True, enforce_sorted=False).to(torch.cuda.current_device())
+				packed_shape = torch.nn.utils.rnn.pack_padded_sequence(padded_shape, shape_lengths, batch_first=True, enforce_sorted=False).to(torch.cuda.current_device())
+				packed_landmarks3d = torch.nn.utils.rnn.pack_padded_sequence(padded_landmarks3d, landmarks3d_lengths, batch_first=True, enforce_sorted=False).to(torch.cuda.current_device())
 
 				# padded_batch = torch.nn.utils.rnn.pad_sequence(batch, batch_first=True)
 				# mask = (padded_batch != 0)

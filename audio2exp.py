@@ -24,9 +24,9 @@ from emoca.gdl_apps.EMOCA.utils.io import save_obj, save_images, save_codes, tes
 
 wandb_logger = WandbLogger(name='Audio2Exp',project='MemFace')
 pl.seed_everything(42, workers=True)
- #torch.backends.cudnn.determinstic = True
+#torch.backends.cudnn.determinstic = True
 # torch.backends.cudnn.benchmark = False
-device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+# device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
 class Audio2Exp(pl.LightningModule):
 	def __init__(self):
@@ -78,12 +78,11 @@ class Audio2Exp(pl.LightningModule):
 						param.requires_grad = False
 		
 		packed_audio_embed, packed_exp, packed_pose, packed_shape, packed_landmarks3d, sequence_lengths = batch
-		packed_audio_embed = packed_audio_embed.to(device)
-		packed_exp = packed_exp.to(device)
-		packed_pose = packed_pose.to(device)
-		packed_shape = packed_shape.to(device)
-		packed_landmarks3d = packed_landmarks3d.to(device)
-
+		# packed_audio_embed = packed_audio_embed.to(device)
+		# packed_exp = packed_exp.to(device)
+		# packed_pose = packed_pose.to(device)
+		# packed_shape = packed_shape.to(device)
+		# packed_landmarks3d = packed_landmarks3d.to(device)
 
 		audio_embed, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_audio_embed, batch_first=True)
 		exp, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_exp, batch_first=True)
@@ -98,7 +97,7 @@ class Audio2Exp(pl.LightningModule):
 		mse_loss = torch.nn.MSELoss()	
 		l2_exp = mse_loss(exp_hat, exp)
 		print(f'training loop pose.shape after forward pass and before get_Om: {pose.shape}')
-		landmarks3d_hat = get_Om(pose, shape, exp_hat, emoca, batch_size=16)
+		landmarks3d_hat = get_Om(pose, shape, exp_hat, emoca, batch_size=64)
 		# landmarks3d_hat = landmarks3d
 		print(f'training loop landmarks3d.shape before squeeze: {landmarks3d.shape}')
 		landmarks3d = torch.squeeze(landmarks3d, 2)
@@ -117,11 +116,11 @@ class Audio2Exp(pl.LightningModule):
 
 	def validation_step(self, batch, batch_idx):
 		packed_audio_embed, packed_exp, packed_pose, packed_shape, packed_landmarks3d, sequence_lengths = batch
-		packed_audio_embed = packed_audio_embed.to(device)
-		packed_exp = packed_exp.to(device)
-		packed_pose = packed_pose.to(device)
-		packed_shape = packed_shape.to(device)
-		packed_landmarks3d = packed_landmarks3d.to(device)
+		# packed_audio_embed = packed_audio_embed.to(device)
+		# packed_exp = packed_exp.to(device)
+		# packed_pose = packed_pose.to(device)
+		# packed_shape = packed_shape.to(device)
+		# packed_landmarks3d = packed_landmarks3d.to(device)
 
 
 		audio_embed, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_audio_embed, batch_first=True)
@@ -138,7 +137,7 @@ class Audio2Exp(pl.LightningModule):
 		mse_loss = torch.nn.MSELoss()	
 		l2_exp = mse_loss(exp_hat, exp)
 		print(f'val pose.shape after forward pass and before get_Om: {pose.shape}')
-		landmarks3d_hat = get_Om(pose, shape, exp_hat, emoca, batch_size=16)
+		landmarks3d_hat = get_Om(pose, shape, exp_hat, emoca, batch_size=64)
 		
 		# landmarks3d_hat = landmarks3d
 		print(f'val landmarks3d_hat.shape after get_Om(): {landmarks3d_hat.shape}')
@@ -206,7 +205,7 @@ class ImplicitMem(nn.Module):
 		
 		# do we need to unflatten the output of dim (q_len_flat, 64) back into batches?
 		# batch_size = self.batch_size
-		batch_size = 16
+		batch_size = 64
 		print(f'output.shape inside ImplicitMem: {output.shape}')
 		orig_shape_output = output.view(batch_size, max_len, 64)
 		return orig_shape_output
@@ -313,14 +312,14 @@ if __name__ == '__main__':
 		path_to_models = "/home/avocoral/MemFace/emoca/assets/EMOCA/models"
 		model_name = 'EMOCA'
 		mode = 'detail'
-
+		
 		emoca, conf = load_model(path_to_models, model_name, mode)
 		emoca.cuda()
 		emoca.eval()
 
 		# callbacks=[EarlyStopping(monitor="val_loss", mode="min")], 
 		# fast_dev_run=True,
-		trainer = pl.Trainer(default_root_dir='checkpoints', callbacks=[EarlyStopping(monitor="val_loss", mode="min")], logger=wandb_logger, devices=1, accelerator="gpu")
+		trainer = pl.Trainer(default_root_dir='checkpoints', callbacks=[EarlyStopping(monitor="val_loss", mode="min")], logger=wandb_logger, gpus=[0,1,2,3], accelerator="gpu", distributed_backend='ddp')
 		trainer.fit(audio2exp, train_dataloader, val_dataloader)
 
 

@@ -20,7 +20,8 @@ from gdl.datasets.FaceVideoDataModule import TestFaceVideoDM
 from gdl_apps.EMOCA.utils.io import save_obj, save_images, save_codes, test, decode
 import os
 import shutil
-
+from pathlib import Path
+from tqdm import auto
 
 def readReconstruction(filepath):
 	f = np.load(filepath, allow_pickle=True)
@@ -171,6 +172,54 @@ def get_Om(pose, shape, exp, emoca=None, batch_size=16):
 	return landmarks3d_hat
 
 
+def neural_rendering_facereconstruction(filepath):
+	path_to_models = "/home/avocoral/MemFace/emoca/assets/EMOCA/models"
+	input_video =	filepath 
+	output_folder = filepath.rsplit('.', 1)[0]
+	model_name = 'EMOCA'
+	image_type = 'geometry_detail'
+	cat_dim = 0
+	include_transparent = False
+	processed_subfolder = None
+	mode = 'detail'	
+	
+	dm = TestFaceVideoDM(input_video, output_folder, processed_subfolder=Path(input_video).stem,
+        batch_size=1, num_workers=24)
+	dm.prepare_data()
+	dm.setup()
+	processed_subfolder = Path(dm.output_dir).name
+
+	## 2) Load the model
+	emoca, conf = load_model(path_to_models, model_name, mode)
+	emoca.cuda()
+	emoca.eval()
+
+	outfolder = str(Path(output_folder) / Path(input_video).stem)
+
+	## 3) Get the data loadeer with the detected faces
+	dl = dm.test_dataloader()
+	## 4) Run the model on the data
+	for j, batch in enumerate (auto.tqdm( dl)):
+
+		current_bs = batch["image"].shape[0]
+		img = batch
+		vals, visdict = test(emoca, img)
+		# print('+---------------- Landmarks3D ----------------+')
+		# print(vals['landmarks3d'])
+		for i in range(current_bs):
+			# name = f"{(j*batch_size + i):05d}"
+			name =  batch["image_name"][i]
+
+			sample_output_folder = Path(outfolder) /name
+			sample_output_folder.mkdir(parents=True, exist_ok=True)
+			# break
+			save_images(outfolder, name, visdict, i)
+			save_codes(Path(outfolder), name, vals, i)
+
+def construct_explicitmem():
+	# should be performed after face reconstruction
+	return None
+
 if __name__ == '__main__':
 	# landmark = '/home/avocoral/MemFace/emoca/output/processed_2023_Jan_02_17-22-45/testvid/landmarks/000042_000.pkl'
 	# exp_filepath = '/mnt/sda/AVSpeech/video/GWwK4ak096M_9/000001_000/exp.npy'
@@ -184,7 +233,7 @@ if __name__ == '__main__':
 	# print(f'betas: {betas}')
 	# landmarks3d = get_Om(posecode, shapecode, expcode)
 	# print(landmarks3d)
-	move_files_around()
+	# move_files_around()
 	
 	# --- to load the dataloader and take the 1st batch ---
 	# datamodule = Audio2ExpDataModule()
@@ -202,3 +251,4 @@ if __name__ == '__main__':
 	# 
 	# landmarks3d_hat = get_Om(pose, shape, exp)
 	# print(f'landmarks_hat.shape: {landmarks3d_hat.shape}')
+	neural_rendering_facereconstruction('/home/avocoral/MemFace/williamblake.mp4')
