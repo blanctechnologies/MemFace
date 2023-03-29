@@ -4,7 +4,7 @@ from PIL import Image, ImageDraw
 import random
 import torchvision
 from torchvision.io import read_image
-from torchvision.utils import draw_keypoints, save_image
+from torchvision.utils import save_image
 from torchvision.transforms.functional import pil_to_tensor
 import torchvision.transforms.functional as F
 import torch
