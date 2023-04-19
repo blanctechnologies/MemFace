@@ -12,16 +12,16 @@ import torch
 # import trimesh
 import sys
 from datasets import Audio2ExpDataModule
-sys.path.insert(0, 'root/MemFace/emoca')
 
-from gdl_apps.EMOCA.utils.load import load_model
-from gdl.utils.FaceDetector import FAN
-from gdl.datasets.FaceVideoDataModule import TestFaceVideoDM
-from gdl_apps.EMOCA.utils.io import save_obj, save_images, save_codes, test, decode
+from emoca.gdl_apps.EMOCA.utils.load import load_model
+from emoca.gdl.utils.FaceDetector import FAN
+from emoca.gdl.datasets.FaceVideoDataModule import TestFaceVideoDM
+from emoca.gdl_apps.EMOCA.utils.io import save_obj, save_images, save_codes, test, decode
 import os
 import shutil
 from pathlib import Path
 from tqdm import auto
+import cv2
 
 def readReconstruction(filepath):
 	f = np.load(filepath, allow_pickle=True)
@@ -216,9 +216,137 @@ def neural_rendering_facereconstruction(filepath):
 			save_images(outfolder, name, visdict, i)
 			save_codes(Path(outfolder), name, vals, i)
 
-def construct_explicitmem():
-	# should be performed after face reconstruction
-	return None
+def mask_face(folderpath='/home/avocoral/MemFace/williamblake/williamblake'):
+	imgs = os.listdir(folderpath)
+	for img in imgs:
+		if img[-3:] != '000':
+			# dropping the metafolders
+			continue
+
+
+def find_most_similar_tensors(K_nr):
+	# Create an empty array to store RMS distances between tensors
+	print('inside find_most_similar_tensors')
+	n = len(K_nr)
+	print(f'len(K_nr): {n}')
+	print(f'first elem of K_nr: {K_nr[0]}')
+	rms_distances = np.full((n, n), np.inf)	
+	# Calculate RMS distances between all pairs of tensors
+	for i, (tensor1, _) in enumerate(K_nr):
+		for j, (tensor2, _) in enumerate(K_nr):
+			if i != j:
+				rms_distances[i, j] = torch.sqrt(torch.mean(torch.square(tensor1 - tensor2)))
+	
+	# Find the indices of the two tuples with the smallest RMS distance
+	min_indices = np.unravel_index(np.argmin(rms_distances), rms_distances.shape)
+	
+	# Return the two tuples with the smallest RMS distance and the RMS distance itself
+	return K_nr[min_indices[0]], K_nr[min_indices[1]], rms_distances[min_indices]
+
+
+def replace_tuple_by_label(array_of_tuples, target_label, new_tuple):
+    result = []
+    for tuple_a in array_of_tuples:
+        if tuple_a[1] == target_label:
+            result.append(new_tuple)
+        else:
+            result.append(tuple_a)
+    return result
+
+def find_optimal_lipsbox(landmarks2d_dir='/home/avocoral/MemFace/williamblake10/williamblake10_meta/landmarks'):
+	minX, maxX, minY, maxY = None, None, None, None
+	for frame in os.listdir(landmarks2d_dir):
+		landmarks2d_path = os.path.join(landmarks2d_dir, frame)
+		
+		# load mouth landmarks2d
+		objects = []
+		with (open(landmarks2d_path, "rb")) as openfile:
+			while True:
+				try:
+					objects.append(pickle.load(openfile))
+				except EOFError:
+					break
+		
+		mouth_landmarks = torch.Tensor([[[int(objects[1][i][0]), int(objects[1][i][1])] for i in range(len(objects[1])) if 48 <= i < 69]])
+		print(f'mouth_landmarks: {mouth_landmarks}')
+		
+		# lip region crop + 1pixel boundary around 
+		minX_new = int(mouth_landmarks[:, :, 0].min() - 1)
+		maxX_new = int(mouth_landmarks[:, :, 0].max() + 1)
+		minY_new = int(mouth_landmarks[:, :, 1].min() - 1)
+		maxY_new = int(mouth_landmarks[:, :, 1].max() + 1)
+
+		if minX == None or minX_new < minX:
+			minX = minX_new
+		if maxX == None or maxX_new > maxX:
+			maxX = maxX_new
+		if minY == None or minY_new < minY:
+			minY = minY_new
+		if maxY == None or maxY_new > maxY:
+			maxY = maxY_new
+	
+	return minX, maxX, minY, maxY
+
+
+def construct_explicitmem(data_dir='/home/avocoral/MemFace/williamblake10/williamblake10', metadata_dir='/home/avocoral/MemFace/williamblake10/williamblake10_meta'):
+	N = 300
+	
+	# Step 0: Build K_all
+	K_all = []
+	for i, frame_name in enumerate(os.listdir(data_dir)):
+		K_all.append((torch.from_numpy(np.load(os.path.join(data_dir, frame_name, 'landmarks3d.npy')))[:, 48:, :], frame_name))
+
+	# step 1: Initialize K_nr, V_nr
+	K_nr = random.sample(K_all, 30)
+
+	# step 2: Find two most similar mouth shapes:
+	k_m1, k_m2, Dmin = find_most_similar_tensors(K_nr)
+	print(f'k_m1: {k_m1}')
+	print(f'k_m2: {k_m2}')
+	print(f'Dmin: {Dmin}')
+	
+	# step 3: go through all tensors in K_all
+	i = 0
+	for k_tmp in K_all:
+		print(f"Preprocessed {i}/{len(K_all)}")
+		# create a copy of K_nr where k_m1 replaced with k_tmp
+		K_tmp1 = replace_tuple_by_label(K_nr, k_m1[1], k_tmp)	
+		# find two most similar tensors in K_nr and their distance Dmin1
+		# print(f'K_tmp1[0]: {K_tmp1[0]}')
+		_ , _ , Dmin1 = find_most_similar_tensors(K_tmp1)
+		# create a copy of K_nr where k_m1 replaced with k_tmp
+		K_tmp2 = replace_tuple_by_label(K_nr, k_m2[1], k_tmp)	
+		# find two most similar tensors in K_nr and their distance Dmin1
+		_ , _ , Dmin2 = find_most_similar_tensors(K_tmp2)
+
+		if max(Dmin1, Dmin2) > Dmin:
+			if Dmin1 > Dmin2:
+				K_nr = replace_tuple_by_label(K_nr, k_m1[1], k_tmp)
+			else:
+				K_nr = replace_tuple_by_label(K_nr, k_m2[1], k_tmp)
+		k_m1, k_m2, Dmin = find_most_similar_tensors(K_nr)
+		i += 1
+	resulting_labels = [elem[1] for elem in K_nr]
+	print(resulting_labels)
+	
+	# find the lipsbox
+	minX, maxX, minY, maxY = find_optimal_lipsbox()
+	
+	# extract V_nr
+	lips_dir = '/home/avocoral/MemFace/williamblake10/williamblake10_ExplicitMemLips'
+	print(f'minX, maxX, minY, maxY = {minX}, {maxX}, {minY}, {maxY}')
+	print(f'len(K_nr)')
+	for (_, frame) in K_nr:
+		print(f'frame: {frame}')
+		img_path = os.path.join(data_dir, frame, 'inputs.png')
+		original_image = cv2.imread(img_path)
+		crop_lips = original_image[minY:maxY, minX:maxX]
+		cv2.imwrite(f'{lips_dir}/{frame}_lips.png', crop_lips)	
+
+	
+	
+	return K_nr
+
 
 if __name__ == '__main__':
 	# landmark = '/home/avocoral/MemFace/emoca/output/processed_2023_Jan_02_17-22-45/testvid/landmarks/000042_000.pkl'
@@ -251,4 +379,6 @@ if __name__ == '__main__':
 	# 
 	# landmarks3d_hat = get_Om(pose, shape, exp)
 	# print(f'landmarks_hat.shape: {landmarks3d_hat.shape}')
-	neural_rendering_facereconstruction('/home/avocoral/MemFace/williamblake.mp4')
+	# neural_rendering_facereconstruction('/home/avocoral/MemFace/williamblake10.mp4')
+	construct_explicitmem()
+	# print(find_optimal_lipsbox())

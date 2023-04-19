@@ -13,8 +13,8 @@ class NeuralRender(pl.LightningModule):
 		self.N = None
 		self.d_k = None
 		self.d_v = None
-		self.keys = nn.Embedding(N, d_k)
-		self.values = nn.Embedding(N, d_v)
+		self.keys = None 
+		self.values = None
 
 		self.encoder = Encoder()
 		self.explicitmem = ExplicitMem(keys, values)

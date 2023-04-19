@@ -1,12 +1,109 @@
 import torch
 import pytorch_lightning as pl
 from torch.utils.data import Dataset, DataLoader, random_split
+import cv2
 import os
 import pandas as pd
 from torchvision.io import read_image
 import numpy as np
 import torch.nn.functional as F
+from PIL import Image
+import torchvision.transforms as transforms
+import pickle
 
+class NeuralRenderingDataset(Dataset):
+		def __init__(self, data_dir='/home/avocoral/MemFace/williamblake10/williamblake10', metadata_dir='/home/avocoral/MemFace/williamblake10/williamblake10_meta'):
+				self.data_dir = data_dir
+				self.metadata_dir = metadata_dir
+		
+		def __len__(self):
+				return len(os.listdir(self.data_dir))
+
+		def __getitem__(self, idx):
+				frame_dir = os.listdir(self.data_dir)[idx]
+				
+				img_path = os.path.join(self.data_dir, frame_dir, 'inputs.png')
+				mask_path = os.path.join(self.data_dir, frame_dir, 'mask.png')
+				ref_path = os.path.join(self.data_dir, frame_dir, 'geometry_coarse.png')
+				landmarks2d_path = os.path.join(self.metadata_dir, 'landmarks', frame_dir+'.pkl')
+				landmarks3d_path = os.path.join(self.data_dir, frame_dir, 'landmarks3d.npy')
+				print(f'img_path: {img_path}')	
+				# load landmarks3d
+					
+				landmarks3d = torch.from_numpy(np.load(landmarks3d_path))[:, 48:, :]
+				
+				# load mouth landmarks2d
+				objects = []
+				with (open(landmarks2d_path, "rb")) as openfile:
+						while True:
+								try:
+										objects.append(pickle.load(openfile))
+								except EOFError:
+										break
+				
+				mouth_landmarks = torch.Tensor([[[int(objects[1][i][0]), int(objects[1][i][1])] for i in range(len(objects[1])) if 48 <= i < 69]])
+				print(f'mouth_landmarks: {mouth_landmarks}')
+				
+				# lip region crop + 1pixel boundary around
+				minX = int(mouth_landmarks[:, :, 0].min() - 1)
+				maxX = int(mouth_landmarks[:, :, 0].max() + 1)
+				minY = int(mouth_landmarks[:, :, 1].min() - 1)
+				maxY = int(mouth_landmarks[:, :, 1].max() + 1)
+				mouth_landmarks2d = (minX, maxX, minY, maxY)
+
+				# masking face
+				original_image = cv2.imread(img_path)
+				ref_image = cv2.imread(ref_path)
+				mask_image = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+
+				# crop lip region and save it
+				# crop_lips = original_image[minY:maxY, minX:maxX]
+				# cv2.imwrite('cropped_lips.png', crop_lips)
+				
+				# Convert the mask image to binary
+				_, binary_mask = cv2.threshold(mask_image, thresh=1, maxval=255, type=cv2.THRESH_BINARY)
+
+				# Invert the binary mask image
+				inverted_mask = cv2.bitwise_not(binary_mask)
+
+				# Multiply the inverted mask with the original image
+				masked_image = cv2.bitwise_and(original_image, original_image, mask=inverted_mask)
+
+				# mask the lips regiond
+				rectangle_coords = ((minX, maxY), (maxX, minY))  # (top-left corner, bottom-right corner)
+				cv2.rectangle(masked_image, rectangle_coords[0], rectangle_coords[1], color=(0, 0, 0), thickness=-1)
+				# Save the resulting masked image
+				# cv2.imwrite('masked_face.png', masked_image)
+				
+				# channel_wise concat of masked image and ref image
+
+				# return (masked_img, ref_image), original_image, landmarks3d, mouth_landmarks2d
+				# -> later on we can find optimal mouth_landmarks and cut them from original_image
+				b1, g1, r1 = cv2.split(masked_image)
+				b2, g2, r2 = cv2.split(ref_image)
+
+				merged_image = cv2.merge((b1, g1, r1, b2, g2, r2))
+								
+				return masked_image, original_image, landmarks3d, mouth_landmarks2d
+
+
+class NeuralRenderingDataModule(pl.LightningDataModule):
+		def __init__(self, data_dir='/home/avocoral/MemFace/williamblake10/williamblake10', metadata_dir='/home/avocoral/MemFace/williamblake10/williamblake10_meta'):
+				super().__init__()
+				self.data_dir = data_dir
+				self.metadata_dir = metadata_dir
+
+		def setup(self, stage = 'fit'):
+				self.train = NeuralRenderingDataset(self.data_dir, self.metadata_dir)
+				lipsbox = find_optimal_lipsbox()
+
+		def train_dataloader(self):
+				return DataLoader(self.train, batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, drop_last=True)
+
+		def val_dataloader(self):
+				return DataLoader(self.val, batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, drop_last=True)
+
+				
 # based on AVSpeech dataset
 class Audio2ExpDataset(Dataset):
 		def __init__(self, audio_embed_dir : str, coeff_dir : str, transform=None):
@@ -120,40 +217,43 @@ class Audio2ExpDataModule(pl.LightningDataModule):
 				return packed_audio_embed, packed_exp, packed_pose, packed_shape, packed_landmarks3d, audio_embed_lengths
 
 if __name__ == '__main__':
-		datamodule = Audio2ExpDataModule()
-		datamodule.setup()
-		device = 'cuda:0'
+		# datamodule = Audio2ExpDataModule()
+		# datamodule.setup()
+		# device = 'cuda:0'
 		# print(f'len: {len(datamodule.train)}')
-		train_loader = datamodule.train_dataloader()	
-		
-		first_batch = next(iter(train_loader))
-		packed_audio_embed, packed_exp, packed_pose, packed_shape, packed_landmarks3d, sequence_lengths = first_batch
+		# train_loader = datamodule.train_dataloader()	
+		# 
+		# first_batch = next(iter(train_loader))
+		# packed_audio_embed, packed_exp, packed_pose, packed_shape, packed_landmarks3d, sequence_lengths = first_batch
 
-		audio_embed, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_audio_embed, batch_first=True)
-		exp, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_exp, batch_first=True)
-		pose, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_pose, batch_first=True)
-		shape, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_shape, batch_first=True)
-		landmarks3d, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_landmarks3d, batch_first=True)
+		# audio_embed, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_audio_embed, batch_first=True)
+		# exp, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_exp, batch_first=True)
+		# pose, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_pose, batch_first=True)
+		# shape, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_shape, batch_first=True)
+		# landmarks3d, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_landmarks3d, batch_first=True)
 
-		
-		print(f'sequence_lengths: {sequence_lengths}')
-		
+		# 
+		# print(f'sequence_lengths: {sequence_lengths}')
+		# 
 
-		# take the 2nd sample from batch, crop the padding | double check the indexing !
+		# # take the 2nd sample from batch, crop the padding | double check the indexing !
 		# audio_embed = audio_embed[1][:int(audio_embed_lengths[0])]
 		# exp = exp[1][:int(exp_lengths[0])]
 		# pose = pose[1][:int(pose_lengths[0])]
 		# shape = shape[1][:int(shape_lengths[0])]
 		# landmarks3d = landmarks3d[1][:int(landmarks3d_lengths[0])]
-		unpacked_audio_embed = [seq[:seq_len] for seq, seq_len in zip(audio_embed, sequence_lengths)]
-		unpacked_exp = [seq[:seq_len] for seq, seq_len in zip(exp, sequence_lengths)]
-		unpacked_pose = [seq[:seq_len] for seq, seq_len in zip(pose, sequence_lengths)]
-		unpacked_shape = [seq[:seq_len] for seq, seq_len in zip(shape, sequence_lengths)]
-		unpacked_landmarks3d = [seq[:seq_len] for seq, seq_len in zip(landmarks3d, sequence_lengths)]
-		i = 2
-		print('-------- AFTER SLICING ----------')
-		print(f"audio_embed shape: {unpacked_audio_embed[i].shape}")
-		print(f"exp shape: {unpacked_exp[i].shape}")
-		print(f"pose shape: {unpacked_pose[i].shape}")
-		print(f"shape shape: {unpacked_shape[i].shape}")
-		print(f"landmarks3d shape: {unpacked_landmarks3d[i].shape}")
+		# unpacked_audio_embed = [seq[:seq_len] for seq, seq_len in zip(audio_embed, sequence_lengths)]
+		# unpacked_exp = [seq[:seq_len] for seq, seq_len in zip(exp, sequence_lengths)]
+		# unpacked_pose = [seq[:seq_len] for seq, seq_len in zip(pose, sequence_lengths)]
+		# unpacked_shape = [seq[:seq_len] for seq, seq_len in zip(shape, sequence_lengths)]
+		# unpacked_landmarks3d = [seq[:seq_len] for seq, seq_len in zip(landmarks3d, sequence_lengths)]
+		# i = 2
+		# print('-------- AFTER SLICING ----------')
+		# print(f"audio_embed shape: {unpacked_audio_embed[i].shape}")
+		# print(f"exp shape: {unpacked_exp[i].shape}")
+		# print(f"pose shape: {unpacked_pose[i].shape}")
+		# print(f"shape shape: {unpacked_shape[i].shape}")
+		# print(f"landmarks3d shape: {unpacked_landmarks3d[i].shape}")
+
+		dataset = NeuralRenderingDataset()
+		print(dataset[0])
