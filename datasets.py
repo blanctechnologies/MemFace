@@ -17,74 +17,69 @@ class NeuralRenderingDataset(Dataset):
 				self.metadata_dir = metadata_dir
 		
 		def __len__(self):
-				return len(os.listdir(self.data_dir))
+				# -25 frames, cause we don't take any of the last 25 frames as first frame of seq
+				return len(os.listdir(self.data_dir))-25
 
 		def __getitem__(self, idx):
-				frame_dir = os.listdir(self.data_dir)[idx]
-				
-				img_path = os.path.join(self.data_dir, frame_dir, 'inputs.png')
-				mask_path = os.path.join(self.data_dir, frame_dir, 'mask.png')
-				ref_path = os.path.join(self.data_dir, frame_dir, 'geometry_coarse.png')
-				landmarks2d_path = os.path.join(self.metadata_dir, 'landmarks', frame_dir+'.pkl')
-				landmarks3d_path = os.path.join(self.data_dir, frame_dir, 'landmarks3d.npy')
-				print(f'img_path: {img_path}')	
-				# load landmarks3d
+				# one elem is 25 continious frames of ref video + masked original
+				first_frame_idx = os.listdir(self.data_dir)[idx].rsplit('_',1)[0].lstrip('0')
+				if first_frame_idx == '':
+					first_frame_idx = 0
+				else:
+					first_frame_idx = int(first_frame_idx)
+	
+				frames_dir = [str(first_frame_idx+i).zfill(6)+'_000' for i in range(25)]
+				orig_images = []
+				landmarks3d_final = []
+				masked_ref_images = []
+				print(f'frames_dir: {frames_dir}')	
+				for i, frame_dir in enumerate(frames_dir):
+					img_path = os.path.join(self.data_dir, frame_dir, 'inputs.png')
+					mask_path = os.path.join(self.data_dir, frame_dir, 'mask.png')
+					ref_path = os.path.join(self.data_dir, frame_dir, 'geometry_coarse.png')
+					landmarks2d_path = os.path.join(self.metadata_dir, 'landmarks', frame_dir+'.pkl')
+					landmarks3d_path = os.path.join(self.data_dir, frame_dir, 'landmarks3d.npy')
+					print(f'img_path: {img_path}')	
+					# load landmarks3d
 					
-				landmarks3d = torch.from_numpy(np.load(landmarks3d_path))[:, 48:, :]
+					landmarks3d = torch.from_numpy(np.load(landmarks3d_path))[:, 48:, :]
+					
+					# masking face
+					original_image = cv2.imread(img_path)
+					ref_image = cv2.imread(ref_path)
+					mask_image = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+
+					# Convert the mask image to binary
+					_, binary_mask = cv2.threshold(mask_image, thresh=1, maxval=255, type=cv2.THRESH_BINARY)
+
+					# Invert the binary mask image
+					inverted_mask = cv2.bitwise_not(binary_mask)
+
+					# Multiply the inverted mask with the original image
+					masked_image = cv2.bitwise_and(original_image, original_image, mask=inverted_mask)
+					
+					# channel_wise concat of masked image and ref image
+					b1, g1, r1 = cv2.split(masked_image)
+					b2, g2, r2 = cv2.split(ref_image)
+					merged_image = cv2.merge((b1, g1, r1, b2, g2, r2))
+					merged_image_tensor = torch.from_numpy(merged_image).permute(3, 1, 2)
+					
+					# ???
+					# should i transpose ref image and masked image as well?
+					masked_ref_images.append(merged_image_tensor)
+					orig_images.append(torch.from_numpy(np.transpose(original_image, (2, 0, 1))))
+					landmarks3d_final.append(landmarks3d)
 				
-				# load mouth landmarks2d
-				objects = []
-				with (open(landmarks2d_path, "rb")) as openfile:
-						while True:
-								try:
-										objects.append(pickle.load(openfile))
-								except EOFError:
-										break
+				# masked_ref_images = torch.stack(masked_ref_images)
+				orig_images = torch.stack(orig_images)
+				landmarks3d = torch.stack(landmarks3d_final)
+				masked_ref_images = torch.stack(masked_ref_images)
 				
-				mouth_landmarks = torch.Tensor([[[int(objects[1][i][0]), int(objects[1][i][1])] for i in range(len(objects[1])) if 48 <= i < 69]])
-				print(f'mouth_landmarks: {mouth_landmarks}')
-				
-				# lip region crop + 1pixel boundary around
-				minX = int(mouth_landmarks[:, :, 0].min() - 1)
-				maxX = int(mouth_landmarks[:, :, 0].max() + 1)
-				minY = int(mouth_landmarks[:, :, 1].min() - 1)
-				maxY = int(mouth_landmarks[:, :, 1].max() + 1)
-				mouth_landmarks2d = (minX, maxX, minY, maxY)
-
-				# masking face
-				original_image = cv2.imread(img_path)
-				ref_image = cv2.imread(ref_path)
-				mask_image = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-
-				# crop lip region and save it
-				# crop_lips = original_image[minY:maxY, minX:maxX]
-				# cv2.imwrite('cropped_lips.png', crop_lips)
-				
-				# Convert the mask image to binary
-				_, binary_mask = cv2.threshold(mask_image, thresh=1, maxval=255, type=cv2.THRESH_BINARY)
-
-				# Invert the binary mask image
-				inverted_mask = cv2.bitwise_not(binary_mask)
-
-				# Multiply the inverted mask with the original image
-				masked_image = cv2.bitwise_and(original_image, original_image, mask=inverted_mask)
-
-				# mask the lips regiond
-				rectangle_coords = ((minX, maxY), (maxX, minY))  # (top-left corner, bottom-right corner)
-				cv2.rectangle(masked_image, rectangle_coords[0], rectangle_coords[1], color=(0, 0, 0), thickness=-1)
-				# Save the resulting masked image
-				# cv2.imwrite('masked_face.png', masked_image)
-				
-				# channel_wise concat of masked image and ref image
-
-				# return (masked_img, ref_image), original_image, landmarks3d, mouth_landmarks2d
-				# -> later on we can find optimal mouth_landmarks and cut them from original_image
-				b1, g1, r1 = cv2.split(masked_image)
-				b2, g2, r2 = cv2.split(ref_image)
-
-				merged_image = cv2.merge((b1, g1, r1, b2, g2, r2))
-								
-				return masked_image, original_image, landmarks3d, mouth_landmarks2d
+				print(f'masked_ref_images.shape: {masked_ref_images.shape}')
+				print(f'orig_images: {orig_images.shape}')
+				print(f'landmarks3d: {landmarks3d.shape}')
+				# return (masked_img, ref_image), original_image, landmarks3d 
+				return masked_ref_images, orig_images, landmarks3d
 
 
 class NeuralRenderingDataModule(pl.LightningDataModule):
@@ -94,14 +89,18 @@ class NeuralRenderingDataModule(pl.LightningDataModule):
 				self.metadata_dir = metadata_dir
 
 		def setup(self, stage = 'fit'):
-				self.train = NeuralRenderingDataset(self.data_dir, self.metadata_dir)
-				lipsbox = find_optimal_lipsbox()
+				if stage == 'fit':
+						NeuralRenderingDataset = NeuralRenderingDataset(self.data_dir, self.metadata_dir)
+						proportions = [.85, .15]
+						lengths = [int(p * len(NeuralRenderingDataset)) for p in proportions]
+						lengths[-1] = len(AVSpeech) - sum(lengths[:-1])
+						self.train, self.val = random_split(NeuralRenderingDataset, lengths)
 
 		def train_dataloader(self):
-				return DataLoader(self.train, batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, drop_last=True)
+				return DataLoader(self.train, batch_size=self.batch_size, num_workers=12)
 
 		def val_dataloader(self):
-				return DataLoader(self.val, batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, drop_last=True)
+				return DataLoader(self.val, batch_size=self.batch_size, num_workers=12)
 
 				
 # based on AVSpeech dataset
@@ -136,7 +135,7 @@ class Audio2ExpDataset(Dataset):
 						exp.append(torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'exp.npy'))))
 						pose.append(torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'pose.npy'))))
 						shape.append(torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'shape.npy'))))
-						Om_frame = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'landmarks3d.npy')))
+						# Om_frame = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'landmarks3d.npy')))
 						# print(f'landmarks_frame.shape: {Om_frame.shape}')
 						Om.append(torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'landmarks3d.npy')))[:, 48:, :])
 				
@@ -256,4 +255,4 @@ if __name__ == '__main__':
 		# print(f"landmarks3d shape: {unpacked_landmarks3d[i].shape}")
 
 		dataset = NeuralRenderingDataset()
-		print(dataset[0])
+		a = dataset[0]

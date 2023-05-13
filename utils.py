@@ -330,23 +330,37 @@ def construct_explicitmem(data_dir='/home/avocoral/MemFace/williamblake10/willia
 	print(resulting_labels)
 	
 	# find the lipsbox
-	minX, maxX, minY, maxY = find_optimal_lipsbox()
+	# minX, maxX, minY, maxY = find_optimal_lipsbox()
 	
 	# extract V_nr
 	lips_dir = '/home/avocoral/MemFace/williamblake10/williamblake10_ExplicitMemLips'
-	print(f'minX, maxX, minY, maxY = {minX}, {maxX}, {minY}, {maxY}')
-	print(f'len(K_nr)')
-	for (_, frame) in K_nr:
-		print(f'frame: {frame}')
-		img_path = os.path.join(data_dir, frame, 'inputs.png')
-		original_image = cv2.imread(img_path)
-		crop_lips = original_image[minY:maxY, minX:maxX]
-		cv2.imwrite(f'{lips_dir}/{frame}_lips.png', crop_lips)	
+	# print(f'minX, maxX, minY, maxY = {minX}, {maxX}, {minY}, {maxY}')
+	# print(f'len(K_nr)')
+	# for (_, frame) in K_nr:
+	# 	print(f'frame: {frame}')
+	# 	img_path = os.path.join(data_dir, frame, 'inputs.png')
+	# 	original_image = cv2.imread(img_path)
+	# 	crop_lips = original_image[minY:maxY, minX:maxX]
+	# 	cv2.imwrite(f'{lips_dir}/{frame}_lips.png', crop_lips)	
 
 	
-	
-	return K_nr
+	# return pytorch tensors of tuple tensors [[k_nr, v_nr], ...]
+	# k_nr - landmarks3d, v_nr image 256x256x3
+	image_path = '/home/avocoral/MemFace/williamblake10/williamblake10/{}/inputs.png'
+	K_nr_new = torch.stack([tensor.squeeze().reshape(60, -1) for tensor, image_name in K_nr]) 
+	V_nr_new = torch.stack([load_tensor_image(image_path.format(image_name)) for tensor, image_name in K_nr])
 
+	return K_nr_new, V_nr_new
+
+
+def load_tensor_image(image_name):
+	with Image.open(image_name) as image:
+		# only load the lower part of the image with lips
+		image = image.crop((0, image.size[1]//2, image.size[0], image.size[1]))
+		tensor_image = torch.ByteTensor(torch.ByteStorage.from_buffer(image.tobytes()))
+		tensor_image = tensor_image.view(image.size[1], image.size[0], -1)
+		tensor_image = tensor_image.permute(2, 0, 1).float().div(255.0)
+	return tensor_image
 
 if __name__ == '__main__':
 	# landmark = '/home/avocoral/MemFace/emoca/output/processed_2023_Jan_02_17-22-45/testvid/landmarks/000042_000.pkl'
@@ -380,5 +394,7 @@ if __name__ == '__main__':
 	# landmarks3d_hat = get_Om(pose, shape, exp)
 	# print(f'landmarks_hat.shape: {landmarks3d_hat.shape}')
 	# neural_rendering_facereconstruction('/home/avocoral/MemFace/williamblake10.mp4')
-	construct_explicitmem()
+	K_nr, V_nr = construct_explicitmem()
+	print(f'K_nr.shape: {K_nr.shape}')
+	print(f'V_nr.shape: {V_nr.shape}')
 	# print(find_optimal_lipsbox())
