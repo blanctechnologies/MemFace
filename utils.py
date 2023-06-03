@@ -64,8 +64,6 @@ def readLandmarks(landmark_filepath, only_mouth = False, visualize = False):
 		# img = pil_to_tensor(im)
 		# img = read_image(vis_name)
 		# keypoints = torch.Tensor([mouth_landmarks])
-		keypoints = mouth_landmarks
-		inner = [(i, i+1) for i in range(10, 18)] + [(18, 10)]
 		outer = [(i, i+1) for i in range(9)] + [(9, 0)]
 		mouth_connections = inner + outer
 		print(mouth_connections)
@@ -119,7 +117,7 @@ def readObj(obj_filepath):
 	print(f'len: {mesh.vertices.shape}')
 	return None
 
-def move_files_around(coeff_dir='/mnt/sda/AVSpeech/video_xac', metadata_dir='/mnt/sda/AVSpeech/metadata_xac'):
+def move_files_around(coeff_dir='/mnt/sda/AVSpeech/dataset_v2_video', metadata_dir='/mnt/sda/AVSpeech/dataset_v2_meta'):
 	faulty_vid_list = []
 	faulty_vid_counter = 0
 	for filename in os.listdir(coeff_dir):
@@ -133,6 +131,36 @@ def move_files_around(coeff_dir='/mnt/sda/AVSpeech/video_xac', metadata_dir='/mn
 			faulty_vid_list.append(filename)
 	print(f'number of faulty vids, that werent moved: {faulty_vid_counter}')
 	print(f'faulty_vid_list: {faulty_vid_list}')
+
+
+def move_files_around_nr(dataset_dir='/mnt/sda/AVSpeech/NR_v1_dataset/dataset_v1'):
+	for video_name in os.listdir(dataset_dir):
+		# first move metadata
+		video_dir = os.path.join(dataset_dir, video_name, 'dataset_preprocessed', video_name)
+		metadata_dir = os.path.join(dataset_dir, video_name, 'dataset_preprocessed', video_name, 'metadata.pkl')
+		more_metadata_dir = os.path.join(dataset_dir, video_name, 'dataset_preprocessed', video_name, video_name)
+		final_metadata_dir = '/mnt/sda/AVSpeech/NR_v1_dataset/dataset_v1_meta'
+		shutil.move(metadata_dir, more_metadata_dir)
+		shutil.move(more_metadata_dir, final_metadata_dir)
+
+
+		final_dir = os.path.join(dataset_dir, video_name)
+		# move all the files from there to the parent final dir
+		shutil.move(video_dir, final_dir)
+
+	
+def move_files_some_more():
+	dataset_dir='/mnt/sda/AVSpeech/NR_v1_dataset/dataset_v1'
+	# delete empty dir, move folder one up
+	for video_name in os.listdir(dataset_dir):
+		os.rmdir(os.path.join(dataset_dir, video_name, 'dataset_preprocessed'))
+		# move the content one up in dir
+		for item in os.listdir(os.path.join(dataset_dir, video_name, video_name)):
+		
+			shutil.move(os.path.join(dataset_dir, video_name, video_name, item), os.path.join(dataset_dir, video_name))
+		# delete empty child dir
+		os.rmdir(os.path.join(dataset_dir, video_name, video_name))
+
 
 def get_Om(pose, shape, exp, emoca=None, batch_size=64):
 	"""
@@ -175,13 +203,13 @@ def get_Om(pose, shape, exp, emoca=None, batch_size=64):
 def neural_rendering_facereconstruction(filepath):
 	path_to_models = "/home/avocoral/MemFace/emoca/assets/EMOCA/models"
 	input_video =	filepath 
-	output_folder = filepath.rsplit('.', 1)[0]
-	model_name = 'EMOCA'
+	output_folder = os.path.join(filepath.rsplit('.', 1)[0], 'dataset_preprocessed')
+	model_name = 'EMOCA_v2_lr_mse_20'
 	image_type = 'geometry_detail'
 	cat_dim = 0
 	include_transparent = False
 	processed_subfolder = None
-	mode = 'detail'	
+	mode = 'detail'
 	
 	dm = TestFaceVideoDM(input_video, output_folder, processed_subfolder=Path(input_video).stem,
         batch_size=1, num_workers=24)
@@ -215,13 +243,6 @@ def neural_rendering_facereconstruction(filepath):
 			# break
 			save_images(outfolder, name, visdict, i)
 			save_codes(Path(outfolder), name, vals, i)
-
-def mask_face(folderpath='/home/avocoral/MemFace/williamblake/williamblake'):
-	imgs = os.listdir(folderpath)
-	for img in imgs:
-		if img[-3:] != '000':
-			# dropping the metafolders
-			continue
 
 
 def find_most_similar_tensors(K_nr):
@@ -289,15 +310,25 @@ def find_optimal_lipsbox(landmarks2d_dir='/home/avocoral/MemFace/williamblake10/
 
 
 def construct_explicitmem(data_dir='/home/avocoral/MemFace/williamblake10/williamblake10', metadata_dir='/home/avocoral/MemFace/williamblake10/williamblake10_meta'):
+	
+	K_nr_filepath = '/home/avocoral/Downloads/Obamaset/K_nr.pt'
+	V_nr_filepath = '/home/avocoral/Downloads/Obamaset/V_nr.pt'
 	N = 300
+
+	if os.path.exists(K_nr_filepath) and os.path.exists(V_nr_filepath):
+		K_nr = torch.load(K_nr_filepath)
+		V_nr = torch.load(V_nr_filepath)
+		return K_nr, V_nr
 	
 	# Step 0: Build K_all
 	K_all = []
 	for i, frame_name in enumerate(os.listdir(data_dir)):
+		if i == 900:
+			break
 		K_all.append((torch.from_numpy(np.load(os.path.join(data_dir, frame_name, 'landmarks3d.npy')))[:, 48:, :], frame_name))
 
 	# step 1: Initialize K_nr, V_nr
-	K_nr = random.sample(K_all, 30)
+	K_nr = random.sample(K_all, N)
 
 	# step 2: Find two most similar mouth shapes:
 	k_m1, k_m2, Dmin = find_most_similar_tensors(K_nr)
@@ -333,7 +364,7 @@ def construct_explicitmem(data_dir='/home/avocoral/MemFace/williamblake10/willia
 	# minX, maxX, minY, maxY = find_optimal_lipsbox()
 	
 	# extract V_nr
-	lips_dir = '/home/avocoral/MemFace/williamblake10/williamblake10_ExplicitMemLips'
+	# lips_dir = '/home/avocoral/MemFace/williamblake10/williamblake10_ExplicitMemLips'
 	# print(f'minX, maxX, minY, maxY = {minX}, {maxX}, {minY}, {maxY}')
 	# print(f'len(K_nr)')
 	# for (_, frame) in K_nr:
@@ -346,10 +377,14 @@ def construct_explicitmem(data_dir='/home/avocoral/MemFace/williamblake10/willia
 	
 	# return pytorch tensors of tuple tensors [[k_nr, v_nr], ...]
 	# k_nr - landmarks3d, v_nr image 256x256x3
-	image_path = '/home/avocoral/MemFace/williamblake10/williamblake10/{}/inputs.png'
+	image_path = '/home/avocoral/Downloads/Obamaset/Obama_vid/{}/inputs.png'
 	K_nr_new = torch.stack([tensor.squeeze().reshape(60, -1) for tensor, image_name in K_nr]) 
 	V_nr_new = torch.stack([load_tensor_image(image_path.format(image_name)) for tensor, image_name in K_nr])
-
+	
+	# save K_nr_new and V_nr_new
+	torch.save(K_nr_new, K_nr_filepath)
+	torch.save(V_nr_new, V_nr_filepath)
+	
 	return K_nr_new, V_nr_new
 
 
@@ -375,7 +410,7 @@ if __name__ == '__main__':
 	# print(f'betas: {betas}')
 	# landmarks3d = get_Om(posecode, shapecode, expcode)
 	# print(landmarks3d)
-	# move_files_around()
+	move_files_around()
 	
 	# --- to load the dataloader and take the 1st batch ---
 	# datamodule = Audio2ExpDataModule()
@@ -393,8 +428,20 @@ if __name__ == '__main__':
 	# 
 	# landmarks3d_hat = get_Om(pose, shape, exp)
 	# print(f'landmarks_hat.shape: {landmarks3d_hat.shape}')
-	# neural_rendering_facereconstruction('/home/avocoral/MemFace/williamblake10.mp4')
-	K_nr, V_nr = construct_explicitmem()
-	print(f'K_nr.shape: {K_nr.shape}')
-	print(f'V_nr.shape: {V_nr.shape}')
+	
+	# --- preprocess NR dataset ---
+	# dataset_dir = '/mnt/sda/AVSpeech/NR_v1_dataset/dataset_v1_videos'
+	# 
+	# for i, video_name in enumerate(os.listdir(dataset_dir)):
+	# 		print(f'! video #{i} preprocessed !')
+	# 		filepath = os.path.join(dataset_dir, video_name)
+	# 
+	# filepath = '/home/avocoral/Downloads/Obamaset/Obama_vid.mp4'
+	# neural_rendering_facereconstruction(filepath)
+
+	# K_nr, V_nr = construct_explicitmem()
+	# print(f'K_nr.shape: {K_nr.shape}')
+	# print(f'V_nr.shape: {V_nr.shape}')
 	# print(find_optimal_lipsbox())
+	# move_files_around_nr()
+	# move_files_some_more()

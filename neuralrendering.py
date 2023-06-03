@@ -8,256 +8,156 @@ import torch.utils.model_zoo as model_zoo
 import torchvision.models as models
 import utils
 from utils import construct_explicitmem
+from datasets import NeuralRenderingDataModule
+import torchvision
 
 # Load a pre-trained VGG16 model
-vgg = models.vgg16(pretrained=True).features[:23]
-vgg.eval()
+device='cuda'
+# vgg = models.vgg16(pretrained=True).features[:23]
+# vgg.to(device)
+# vgg.eval()
+
+
+wandb_logger = WandbLogger(name='NRmodel',project='MemFace')
+pl.seed_everything(42, workers=True)
+
+
+class VGGPerceptualLoss(torch.nn.Module):
+		def __init__(self, resize=True):
+				super(VGGPerceptualLoss, self).__init__()
+				blocks = []
+				blocks.append(torchvision.models.vgg16(pretrained=True).features[:4].eval())
+				blocks.append(torchvision.models.vgg16(pretrained=True).features[4:9].eval())
+				blocks.append(torchvision.models.vgg16(pretrained=True).features[9:16].eval())
+				blocks.append(torchvision.models.vgg16(pretrained=True).features[16:23].eval())
+				for bl in blocks:
+						for p in bl.parameters():
+								p.requires_grad = False
+				self.blocks = torch.nn.ModuleList(blocks)
+				self.transform = torch.nn.functional.interpolate
+				self.resize = resize
+				self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+				self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+
+		def forward(self, input, target, feature_layers=[0, 1, 2, 3], style_layers=[]):
+				if input.shape[1] != 3:
+						input = input.repeat(1, 3, 1, 1)
+						target = target.repeat(1, 3, 1, 1)
+				input = (input-self.mean) / self.std
+				target = (target-self.mean) / self.std
+				if self.resize:
+						input = self.transform(input, mode='bilinear', size=(224, 224), align_corners=False)
+						target = self.transform(target, mode='bilinear', size=(224, 224), align_corners=False)
+				loss = 0.0
+				x = input
+				y = target
+				for i, block in enumerate(self.blocks):
+						x = block(x)
+						y = block(y)
+						if i in feature_layers:
+								loss += torch.nn.functional.l1_loss(x, y)
+						if i in style_layers:
+								act_x = x.reshape(x.shape[0], x.shape[1], -1)
+								act_y = y.reshape(y.shape[0], y.shape[1], -1)
+								gram_x = act_x @ act_x.permute(0, 2, 1)
+								gram_y = act_y @ act_y.permute(0, 2, 1)
+								loss += torch.nn.functional.l1_loss(gram_x, gram_y)
+				return loss
+
+vgg = VGGPerceptualLoss().to("cuda:0")
 
 class NeuralRender(pl.LightningModule):
 	def __init__(self):
 		super().__init__()
-		self.save_hyperparameters()
-
-		self.N = None
-		self.d_k = None
-		self.d_v = None
-		self.keys = None 
-		self.values = None
+		self.N = 300
 
 		self.ImageEncoder = ImageEncoder()
 		self.ExplicitMem = ExplicitMem()
-		self.lstm = ConvLSTM()
+		self.ConvLSTM = ConvLSTM(input_dim=384, hidden_dim=768)
 		self.ImageDecoder = ImageDecoder()
 		self.discriminator = Discriminator()
 	
 	def forward(self, masked_ref_images, landmarks3d):
-		encoded_images = self.ImageEncoder(masked_ref_images)
-		memory_images = self.ExplicitMem(landmarks3d)
+		encoded_images = self.ImageEncoder(masked_ref_images.float())
+		memory_images = self.ExplicitMem(landmarks3d.float())
 
-		final_encoded_images = encoded_images + memory_images
-		output_images_hat = self.ImageDecoder(self.lstm(final_encoded_images))
+		# memory_images: (60, 384, 4, 7) - > (60, 384, 7, 7) - shape of encoded_images
+		reshaped_memory_images = memory_images.reshape(60, 384, 3, 7)
+		
+		print(f'encoded_images.shape: {encoded_images.shape}')
+		print(f'reshaped_memory_images.shape: {reshaped_memory_images.shape}')
+		interpolated_memory_images = F.interpolate(reshaped_memory_images, size=(7, 7), mode='bilinear', align_corners=False)
+		print(f'interpolated_memory_images.shape: {interpolated_memory_images.shape}')
+		
+
+		final_encoded_images = encoded_images + interpolated_memory_images
+		final_encoded_images = final_encoded_images.reshape(2, 30, 384, 7, 7)
+		# here we should reshape (bs*T, ...) -> (bs, T, ...)
+		convlstm_result, state = self.ConvLSTM(final_encoded_images)
+		print(f'convlstm_result.shape: {convlstm_result.shape}')
+		# and here we should reshape (bs, T, ...) -> (bs*T, ...)
+		convlstm_result = convlstm_result.reshape(60, 384, 7, 7)
+
+		output_images_hat = self.ImageDecoder(convlstm_result)
 		
 		return output_images_hat
 	
 	def training_step(self, batch, batch_idx):
 		masked_ref_images, output_images, landmarks3d = batch
-		output_images_hat = self(masked_ref_images)
-		
+		# reshape
+		masked_ref_images = masked_ref_images.view(60, 6, 224, 224)
+		output_images = output_images.view(60, 3, 224, 224)
+		landmarks3d = landmarks3d.squeeze().view(60, 20, 3)
+
+		output_images_hat = self(masked_ref_images, landmarks3d)
+		device = 'cuda'	
+		output_images = output_images.float().to(device)
+		output_images_hat = output_images_hat.float().to(device)
+		print(f'output_images.shape: {output_images.shape}')
+		print(f'output_images_hat.shape: {output_images_hat.shape}')
+		print(f'output_images.device: {output_images.device}')
+		print(f'output_images_hat.device: {output_images_hat.device}')
+		vgg_loss = vgg(output_images_hat, output_images, feature_layers=[0, 1, 2, 3], style_layers=[])
 		mse_loss = torch.nn.MSELoss()
-		l_rec = mse_loss(output_images, output_images_hat) + mse_loss(vgg(output_images), vgg(output_images_hat))
-		l_d_adv = discriminator_loss(d, output_images, output_images_hat)
-		l_nr_adv = generator_loss(d, output_images_hat)
-		l_total = 20*l_rec + 1*l_d_adv + 1*l_nr_adv
+		l_rec = mse_loss(output_images, output_images_hat) + vgg_loss
+		l_d_adv = discriminator_loss(self.discriminator, output_images, output_images_hat)
+		l_nr_adv = generator_loss(self.discriminator, output_images_hat)
+		# 20*l_rec
+		loss = 1*l_rec + 1*l_d_adv + 1*l_nr_adv
+		self.log("l_rec", l_rec)
+		self.log("l_d_adv", l_d_adv)
+		self.log("l_nr_adv", l_nr_adv)
 		self.log("loss", loss)	
 
 	def validation_step(self, batch, batch_idx):
 		masked_ref_images, output_images, landmarks3d = batch
-		output_images_hat = self(masked_ref_images)
-		
+		# reshape
+		masked_ref_images = masked_ref_images.view(60, 6, 224, 224)
+		output_images = output_images.view(60, 3, 224, 224)
+		landmarks3d = landmarks3d.squeeze().view(60, 20, 3)
+
+		output_images_hat = self(masked_ref_images, landmarks3d)
+		device = 'cuda'	
+		output_images = output_images.float().to(device)
+		output_images_hat = output_images_hat.float().to(device)
+		print(f'output_images.shape: {output_images.shape}')
+		print(f'output_images_hat.shape: {output_images_hat.shape}')
+		print(f'output_images.device: {output_images.device}')
+		print(f'output_images_hat.device: {output_images_hat.device}')
+
+		vgg_loss = vgg(output_images_hat, output_images, feature_layers=[0, 1, 2, 3], style_layers=[])
+
 		mse_loss = torch.nn.MSELoss()
-		l_rec = mse_loss(output_images, output_images_hat) + mse_loss(vgg(output_images), vgg(output_images_hat))
-		d = self.discriminator()
-		l_d_adv = discriminator_loss(d, output_images, output_images_hat)
-		l_nr_adv = generator_loss(d, output_images_hat)
-		l_total = 20*l_rec + 1*l_d_adv + 1*l_nr_adv
-		self.log("val_loss", loss)	
+		l_rec = mse_loss(output_images, output_images_hat) + vgg_loss
+		l_d_adv = discriminator_loss(self.discriminator, output_images, output_images_hat)
+		l_nr_adv = generator_loss(self.discriminator, output_images_hat)
+		val_loss = 1*l_rec + 1*l_d_adv + 1*l_nr_adv
+		self.log("val_loss", val_loss)	
+
 	
 	def configure_optimizers(self):
 		optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
 		return optimizer
-
-
-class ImageEncoder(nn.Module):
-	def __init__(self):
-		self.conv1 = Conv2dBlock(in_channels=6, 48, kernel_size=5, stride=2, padding=2)
-		self.conv2 = Conv2dBlock(48, 96, kernel_size=4, stride=2, padding=1)
-		self.conv3 = Conv2dBlock(96, 192, kernel_size=4, stride=2, padding=1)
-		self.conv4 = Conv2dBlock(192, 384, kernel_size=4, stride=2, padding=1)
-		self.conv5 = Conv2dBlock(384, 384, kernel_size=4, stride=2, padding=1)
-		
-		
-	def forward(self, x):
-		x = nn.Sequential(self.conv1, self.conv2, self.conv3, self.conv4, self.conv5)(x)
-		return x
-
-
-class ExplicitMem(nn.Module):
-	def __init__(self, dropout=0.1):
-		super().__init__()
-		
-		self.LipsEncoder = LipsEncoder()
-		self.K_nr, self.V_nr = construct_explicitmem()
-
-		self.w_q = nn.Parameter(torch.randn(60, 60))
-		self.w_k = nn.Parameter(torch.randn(60, 60))
-		self.w_v = nn.Parameter(torch.randn(64, 64))
-		self.w_o = nn.Parameter(torch.randn(1, 64))
-		self.dropout = nn.Dropout(dropout)
-	
-	def forward(self, query):
-		# the input of the ExplicitMemory is tensor 25x20x3, 25 frames of landmarks3d_mouth
-		# the output is tensor of shape 50x384x8x8, same as output of ImageEncoder/LipsEncoder
-		# lips encoder supposed to be the equivalent of the w_v
-		print(f'inside EXPLICITMEM, query.shape: {query.shape}')
-
-		#flatten the query 25x1x20x3 -> 25x60
-		query_flat = query.reshape(-1, 60)
-		print(f'inside EXPLICITMEM, query_flat.shape: {query_flat.shape}')
-		q = torch.matmul(query, self.w_q)
-		k = torch.matmul(self.keys, self.w_k)
-		v = torch.matmul(self.values, self.w_v)
-		
-		# does it mean that instead of v = torch.matmul(self.values, self.w_v)
-		# we use self.LipsEncoder(self.)
-
-		# - mask needs to be applied as well for scoresd
-		# ? is k.transpose(-2, -1) same as k.T
-		
-		# ? how to get mask
-		# - perhaps we need to use lengths
-		# if we matmul padded tensors in q with k, it will zero out
-		scores = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.d_k, dtype=torch.float))
-		
-		# and for softmax we do need mask, the mask will set the padded elements to a very large negative value
-		mask = (scores != 0).float()
-		attention_weights = torch.softmax(scores, dim=-1)
-		attention = torch.matmul(attention_weights, v)
-		output = attention * self.w_o
-		output = self.dropout(attention)
-
-
-
-class Discriminator(nn.Module):
-	def __init__(self):
-		super().__init__()
-		self.net = nn.Sequential(
-            nn.Conv2d(6, 64, kernel_size=4, stride=2, padding=1),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(256, 1, kernel_size=3, stride=1, padding=1),
-            nn.Sigmoid()
-        )
-	def forward(self, x):
-		return self.net(input)
-
-
-
-class LipEncoder(nn.Module):
-	def __init__(self):
-		super().__init__()
-		self.conv1 = nn.Sequential(
-            nn.Conv2d(3, 48, kernel_size=5, stride=2, padding=2, bias=False),
-            nn.InstanceNorm2d(48, eps=1e-5, momentum=0.1, affine=True, track_running_stats=False),
-            nn.LeakyReLU(negative_slope=0.1, inplace=True)
-    )
-		self.conv2 = nn.Sequential(
-            nn.Conv2d(48, 96, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.InstanceNorm2d(96, eps=1e-5, momentum=0.1, affine=True, track_running_stats=False),
-            nn.LeakyReLU(negative_slope=0.1, inplace=True)
-    )
-		self.conv3 = nn.Sequential(
-            nn.Conv2d(96, 192, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.InstanceNorm2d(192, eps=1e-5, momentum=0.1, affine=True, track_running_stats=False),
-            nn.LeakyReLU(negative_slope=0.1, inplace=True)
-		)
-		self.conv4 = nn.Sequential(
-            nn.Conv2d(192, 384, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.InstanceNorm2d(384, eps=1e-5, momentum=0.1, affine=True, track_running_stats=False),
-            nn.LeakyReLU(negative_slope=0.1, inplace=True)
-		)
-		self.conv5 = nn.Sequential(
-            nn.Conv2d(384, 384, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.InstanceNorm2d(384, eps=1e-5, momentum=0.1, affine=True, track_running_stats=False),
-            nn.LeakyReLU(negative_slope=0.1, inplace=True)
-		)
-		
-	def forward(self, x):
-		x = self.conv5(self.conv4(self.conv3(self.conv2(self.conv1(x)))))
-		return x
-
-
-class ConvLSTMCell(nn.Module):
-	def __init__(self, input_size, hidden_size):
-		super(ConvLSTMCell, self).__init__()
-		self.hidden_size = hidden_size
-		self.conv = nn.Conv2d(input_size + hidden_size, 4 * hidden_size, kernel_size=3, stride=1, padding=1, bias=True)
-	
-	def forward(self, input_, state):
-		# unpack the previous state
-		hx, cx = state
-		
-		# concatenate the input and hidden state along the channel dimension
-		combined = torch.cat((input_, hx), dim=1)
-		
-		# apply the convolutional operation to the combined tensor
-		gates = self.conv(combined)
-		
-		# split the convolutional output into separate tensors
-		i, f, o, g = gates.chunk(4, dim=1)
-		
-		# apply the activation functions
-		input_gate = torch.sigmoid(i)
-		forget_gate = torch.sigmoid(f)
-		output_gate = torch.sigmoid(o)
-		cell_gate = torch.tanh(g)
-		
-		# compute the new cell and hidden state
-		cy = forget_gate * cx + input_gate * cell_gate
-		hy = output_gate * torch.tanh(cy)
-		
-		# pack the new state into a tuple
-		state = (hy, cy)
-		
-		return hy, state
-
-
-class ConvLSTM(nn.Module):
-    def __init__(self, input_size, hidden_size):
-        super(ConvLSTM, self).__init__()
-        self.cell = ConvLSTMCell(input_size, hidden_size)
-    
-    def forward(self, input_, state=None):
-        # initialize the hidden and cell states if they are not provided
-        if state is None:
-            batch_size, _, height, width = input_.size()
-            state = (torch.zeros(batch_size, self.cell.hidden_size, height, width, device=input_.device),
-                     torch.zeros(batch_size, self.cell.hidden_size, height, width, device=input_.device))
-        
-        # run the input through the LSTM cell
-        output, state = self.cell(input_, state)
-        
-        return output, state
-
-
-class ImageDecoder(nn.Module):
-	def __init__(self):
-		super(ImageDecoder, self).__init__()
-
-		self.dconv1 = ConvTranspose2dBlock(384, 384, kernel_size=4, stride=2, padding=1, bias=False)
-		self.dconv2 = ConvTranspose2dBlock(768, 192, kernel_size=4, stride=2, padding=1, bias=False)
-		self.dconv3 = ConvTranspose2dBlock(384, 96, kernel_size=4, stride=2, padding=1, bias=False)
-		self.dconv4 = ConvTranspose2dBlock(192, 48, kernel_size=4, stride=2, padding=1, bias=False)
-		self.dconv5 = ConvTranspose2dBlock(96, 48, kernel_size=4, stride=2, padding=1, bias=False)
-		self.dconv6 = nn.Sequential(
-				nn.Conv2d(48, 3, kernel_size=5, stride=1, padding=2),
-				nn.Tanh()
-		)
-
-	def forward(self, x1, x2, x3, x4, x5):
-		x = self.dconv1(x5)
-		x = torch.cat((x, x4), dim=1)
-		x = self.dconv2(x)
-		x = torch.cat((x, x3), dim=1)
-		x = self.dconv3(x)
-		x = torch.cat((x, x2), dim=1)
-		x = self.dconv4(x)
-		x = torch.cat((x, x1), dim=1)
-		x = self.dconv5(x)
-		x = self.dconv6(x)
-		return x
 
 
 class Conv2dBlock(nn.Module):
@@ -274,6 +174,189 @@ class Conv2dBlock(nn.Module):
 		x = self.layers(x)
 		return x
 
+class ImageEncoder(nn.Module):
+	def __init__(self):
+		super().__init__()
+
+		self.conv1 = Conv2dBlock(6, 48, kernel_size=5, stride=2, padding=2)
+		self.conv2 = Conv2dBlock(48, 96, kernel_size=4, stride=2, padding=1)
+		self.conv3 = Conv2dBlock(96, 192, kernel_size=4, stride=2, padding=1)
+		self.conv4 = Conv2dBlock(192, 384, kernel_size=4, stride=2, padding=1)
+		self.conv5 = Conv2dBlock(384, 384, kernel_size=4, stride=2, padding=1)
+		
+		
+	def forward(self, x):
+		x = nn.Sequential(self.conv1, self.conv2, self.conv3, self.conv4, self.conv5)(x)
+		return x
+
+
+class ExplicitMem(nn.Module):
+	def __init__(self, dropout=0.1):
+		super().__init__()
+		
+		self.LipsEncoder = LipEncoder()
+		
+		# depending on training video, we would need to use different ExplicitMem
+		self.K_nr, self.V_nr = construct_explicitmem(data_dir='/home/avocoral/Downloads/Obamaset/Obama_vid', metadata_dir='/home/avocoral/Downloads/Obamaset/Obama_meta')
+		
+		self.K_nr = self.K_nr.to('cuda').reshape(300, 60)
+		self.V_nr = self.V_nr.to('cuda').reshape(300, 3, 112, 224)
+
+		self.w_q = nn.Parameter(torch.randn(60, 60))
+		self.w_k = nn.Parameter(torch.randn(60, 60))
+		# self.w_o = nn.Parameter(torch.randn(1, 64))
+		self.dropout = nn.Dropout(dropout)
+		self.d_k = 60
+	
+	def forward(self, query):
+		# the input of the ExplicitMemory is tensor 25x20x3, 25 frames of landmarks3d_mouth
+		# the output is tensor of shape 50x384x8x8, same as output of ImageEncoder/LipsEncoder
+		# lips encoder supposed to be the equivalent of the w_v
+		print(f'inside EXPLICITMEM, query.shape: {query.shape}')
+
+		#flatten the query 60x20x3 -> 60x60
+		query_flat = query.reshape(-1, 60)
+		print(f'inside EXPLICITMEM, query_flat.shape: {query_flat.shape}')
+		print(f'self.w_q.shape: {self.w_q.shape}')
+		q = torch.matmul(query_flat, self.w_q)
+		print(f'q.shape: {q.shape}')
+		print(f'self.K_nr.shape: {self.K_nr.shape}')
+		print(f'self.w_k.shape: {self.w_k.shape}')
+		k = torch.matmul(self.K_nr, self.w_k)
+		print(f'k.shape: {k.shape}')
+		v = self.LipsEncoder(self.V_nr).reshape(300, -1)
+		print(f'v.shape: {v.shape}')
+		
+		scores = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.d_k, dtype=torch.float))
+		print(f'scores.shape: {scores.shape}')	
+		attention_weights = torch.softmax(scores, dim=-1).reshape(60, 300)
+		print(f'attention_weights.shape: {attention_weights.shape}')
+		attention = torch.matmul(attention_weights, v)
+		print(f'attention.shape: {attention.shape}')
+		# do we need w_o?
+		# do we need dropout?
+		# output = attention * self.w_o
+		output = self.dropout(attention)
+		return output
+
+
+class LipEncoder(nn.Module):
+	def __init__(self):
+		super().__init__()
+		self.conv1 = nn.Sequential(
+						nn.Conv2d(3, 48, kernel_size=5, stride=2, padding=2, bias=False),
+						nn.InstanceNorm2d(48, eps=1e-5, momentum=0.1, affine=True, track_running_stats=False),
+						nn.LeakyReLU(negative_slope=0.1, inplace=True)
+		)
+		self.conv2 = nn.Sequential(
+						nn.Conv2d(48, 96, kernel_size=4, stride=2, padding=1, bias=False),
+						nn.InstanceNorm2d(96, eps=1e-5, momentum=0.1, affine=True, track_running_stats=False),
+						nn.LeakyReLU(negative_slope=0.1, inplace=True)
+		)
+		self.conv3 = nn.Sequential(
+						nn.Conv2d(96, 192, kernel_size=4, stride=2, padding=1, bias=False),
+						nn.InstanceNorm2d(192, eps=1e-5, momentum=0.1, affine=True, track_running_stats=False),
+						nn.LeakyReLU(negative_slope=0.1, inplace=True)
+		)
+		self.conv4 = nn.Sequential(
+						nn.Conv2d(192, 384, kernel_size=4, stride=2, padding=1, bias=False),
+						nn.InstanceNorm2d(384, eps=1e-5, momentum=0.1, affine=True, track_running_stats=False),
+						nn.LeakyReLU(negative_slope=0.1, inplace=True)
+		)
+		self.conv5 = nn.Sequential(
+						nn.Conv2d(384, 384, kernel_size=4, stride=2, padding=1, bias=False),
+						nn.InstanceNorm2d(384, eps=1e-5, momentum=0.1, affine=True, track_running_stats=False),
+						nn.LeakyReLU(negative_slope=0.1, inplace=True)
+		)
+		
+	def forward(self, x):
+		x = self.conv5(self.conv4(self.conv3(self.conv2(self.conv1(x)))))
+		return x
+
+
+class ConvLSTMCell(nn.Module):
+		def __init__(self, input_dim=384, hidden_dim=768):
+				super(ConvLSTMCell, self).__init__()
+
+				self.conv = nn.Conv2d(input_dim + hidden_dim, hidden_dim * 2, kernel_size=3, stride=1, padding=1)
+
+		def forward(self, input_tensor, hidden_state):
+				hidden, cell = hidden_state
+
+				combined = torch.cat([input_tensor, hidden], dim=1)
+				gates = self.conv(combined)
+
+				# Split the output of convolution into hidden and cell state
+				hidden_update, cell_update = torch.chunk(gates, chunks=2, dim=1)
+
+				# Apply the sigmoid function to the hidden and cell state updates
+				hidden_update = torch.sigmoid(hidden_update)
+				cell_update = torch.sigmoid(cell_update)
+
+				# Update the cell and hidden states
+				cell = cell_update * cell + (1 - cell_update) * cell
+				hidden = hidden_update * torch.tanh(cell)
+
+				return hidden, cell
+
+
+class ConvLSTM(nn.Module):
+		def __init__(self, input_dim=384, hidden_dim=768):
+				super().__init__()
+				self.hidden_dim = hidden_dim
+				self.cell_list = nn.ModuleList([
+						ConvLSTMCell(input_dim, hidden_dim)
+				])
+
+		def forward(self, input_tensor):
+				batch_size, time_steps, _, height, width = input_tensor.size()
+
+				hidden_state = (
+						torch.zeros(batch_size, self.hidden_dim, height, width).to(input_tensor.device),
+						torch.zeros(batch_size, self.hidden_dim, height, width).to(input_tensor.device)
+				)
+
+				outputs = []
+				for t in range(time_steps):
+						hidden_state = self.cell_list[0](input_tensor[:, t, :, :, :], hidden_state)
+						outputs.append(hidden_state[0])
+
+				outputs = torch.stack(outputs, dim=1)
+
+				return outputs
+
+
+class ImageDecoder(nn.Module):
+	def __init__(self):
+		super(ImageDecoder, self).__init__()
+
+		self.dconv1 = ConvTranspose2dBlock(384, 384, kernel_size=4, stride=2, padding=1, bias=False)
+		self.dconv2 = ConvTranspose2dBlock(768, 192, kernel_size=4, stride=2, padding=1, bias=False)
+		self.dconv3 = ConvTranspose2dBlock(384, 96, kernel_size=4, stride=2, padding=1, bias=False)
+		self.dconv4 = ConvTranspose2dBlock(192, 48, kernel_size=4, stride=2, padding=1, bias=False)
+		self.dconv5 = ConvTranspose2dBlock(96, 48, kernel_size=4, stride=2, padding=1, bias=False)
+		self.dconv6 = nn.Sequential(
+				nn.Conv2d(48, 3, kernel_size=5, stride=1, padding=2),
+				nn.Tanh()
+		)
+
+	def forward(self, x):
+		print(f'ImageDecoder, input.shape: {x.shape}')
+		x = self.dconv1(x)
+		print(f'ImageDecoder, self.dconv1(x).shape: {x.shape}')
+		x = self.dconv2(x)
+		print(f'ImageDecoder, self.dconv2(x).shape: {x.shape}')
+		x = self.dconv3(x)
+		print(f'ImageDecoder, self.dconv3(x).shape: {x.shape}')
+		x = self.dconv4(x)
+		print(f'ImageDecoder, self.dconv4(x).shape: {x.shape}')
+		x = self.dconv5(x)
+		print(f'ImageDecoder, self.dconv5(x).shape: {x.shape}')
+		x = self.dconv6(x)
+		print(f'ImageDecoder, self.dconv6(x).shape: {x.shape}')
+		return x
+
+
 class ConvTranspose2dBlock(nn.Module):
 	def __init__(self, in_channels, out_channels, kernel_size, stride, padding, bias):
 		super(ConvTranspose2dBlock, self).__init__()
@@ -287,8 +370,30 @@ class ConvTranspose2dBlock(nn.Module):
 		return self.layers(x)
 
 
+class Discriminator(nn.Module):
+	def __init__(self):
+		super().__init__()
+		self.net = nn.Sequential(
+						nn.Conv2d(3, 64, kernel_size=4, stride=2, padding=1),
+						nn.LeakyReLU(0.2, inplace=True),
+						nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
+						nn.LeakyReLU(0.2, inplace=True),
+						nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),
+						nn.LeakyReLU(0.2, inplace=True),
+						nn.Conv2d(256, 1, kernel_size=3, stride=1, padding=1),
+						nn.Sigmoid()
+				)
+	def forward(self, x):
+		print(f'discriminator input shape: {x.shape}')
+		res = self.net(x)
+		print(f'discriminator output shape: {res.shape}')
+		return res
+
+
 def discriminator_loss(d, real_images, generated_images):
 	# Compute the discriminator output for real and generated images
+	print(f'real_images.shape: {real_images.shape}')
+	print(f'generated_images.shape: {generated_images.shape}')
 	d_real = d(real_images)
 	d_generated = d(generated_images)
 
@@ -306,3 +411,24 @@ def generator_loss(discriminator, generated_images):
 	generator_loss = torch.mean(torch.log(1 - d_generated + 1e-8))
 
 	return generator_loss
+
+
+
+
+if __name__ == '__main__':
+	torch.cuda.empty_cache()
+	NRmodel = NeuralRender()
+	
+
+	datamodule = NeuralRenderingDataModule()
+	datamodule.setup()
+
+	train_dataloader = datamodule.train_dataloader()
+	val_dataloader = datamodule.val_dataloader()
+
+	trainer = pl.Trainer(default_root_dir='checkpoints', logger=wandb_logger, gpus=[0], accelerator="gpu")
+	trainer.fit(NRmodel, train_dataloader, val_dataloader)
+
+
+
+

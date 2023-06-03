@@ -12,36 +12,35 @@ import torchvision.transforms as transforms
 import pickle
 
 class NeuralRenderingDataset(Dataset):
-		def __init__(self, data_dir='/home/avocoral/MemFace/williamblake10/williamblake10', metadata_dir='/home/avocoral/MemFace/williamblake10/williamblake10_meta'):
+		def __init__(self, data_dir='/home/avocoral/Downloads/Obamaset/Obama_vid', metadata_dir='/home/avocoral/Downloads/Obamaset/Obama_meta'):
 				self.data_dir = data_dir
 				self.metadata_dir = metadata_dir
-		
+
 		def __len__(self):
 				# -25 frames, cause we don't take any of the last 25 frames as first frame of seq
-				return len(os.listdir(self.data_dir))-25
+				return len(os.listdir(self.data_dir)) - 31
 
 		def __getitem__(self, idx):
 				# one elem is 25 continious frames of ref video + masked original
-				first_frame_idx = os.listdir(self.data_dir)[idx].rsplit('_',1)[0].lstrip('0')
-				if first_frame_idx == '':
-					first_frame_idx = 0
-				else:
-					first_frame_idx = int(first_frame_idx)
-	
-				frames_dir = [str(first_frame_idx+i).zfill(6)+'_000' for i in range(25)]
+				
+				frames_dir = [str(idx+i).zfill(6)+'_000' for i in range(1, 31)]
+				print(f'idx: {idx}')
+				print(f'print dataset len: {self.__len__()}')
+				print(f'frames_dir: {frames_dir}')
 				orig_images = []
 				landmarks3d_final = []
 				masked_ref_images = []
-				print(f'frames_dir: {frames_dir}')	
 				for i, frame_dir in enumerate(frames_dir):
+
 					img_path = os.path.join(self.data_dir, frame_dir, 'inputs.png')
 					mask_path = os.path.join(self.data_dir, frame_dir, 'mask.png')
 					ref_path = os.path.join(self.data_dir, frame_dir, 'geometry_coarse.png')
-					landmarks2d_path = os.path.join(self.metadata_dir, 'landmarks', frame_dir+'.pkl')
 					landmarks3d_path = os.path.join(self.data_dir, frame_dir, 'landmarks3d.npy')
-					print(f'img_path: {img_path}')	
+					# Check if the files exists
+					if not os.path.exists(landmarks3d_path):
+									raise FileNotFoundError(f"Some files are missing for frame {frame_dir}")
+					# landmarks2d_path = os.path.join(self.metadata_dir, 'landmarks', frame_dir+'.pkl')
 					# load landmarks3d
-					
 					landmarks3d = torch.from_numpy(np.load(landmarks3d_path))[:, 48:, :]
 					
 					# masking face
@@ -61,11 +60,10 @@ class NeuralRenderingDataset(Dataset):
 					# channel_wise concat of masked image and ref image
 					b1, g1, r1 = cv2.split(masked_image)
 					b2, g2, r2 = cv2.split(ref_image)
-					merged_image = cv2.merge((b1, g1, r1, b2, g2, r2))
-					merged_image_tensor = torch.from_numpy(merged_image).permute(3, 1, 2)
+					merged_image = cv2.merge((r1, g1, b1, r2, g2, b2))
+					merged_image_tensor = torch.from_numpy(merged_image).permute(2, 0, 1)
 					
-					# ???
-					# should i transpose ref image and masked image as well?
+					# should i transpose ref image and masked image as well? - for consistancy - yes
 					masked_ref_images.append(merged_image_tensor)
 					orig_images.append(torch.from_numpy(np.transpose(original_image, (2, 0, 1))))
 					landmarks3d_final.append(landmarks3d)
@@ -75,34 +73,41 @@ class NeuralRenderingDataset(Dataset):
 				landmarks3d = torch.stack(landmarks3d_final)
 				masked_ref_images = torch.stack(masked_ref_images)
 				
-				print(f'masked_ref_images.shape: {masked_ref_images.shape}')
-				print(f'orig_images: {orig_images.shape}')
-				print(f'landmarks3d: {landmarks3d.shape}')
 				# return (masked_img, ref_image), original_image, landmarks3d 
 				return masked_ref_images, orig_images, landmarks3d
 
 
 class NeuralRenderingDataModule(pl.LightningDataModule):
-		def __init__(self, data_dir='/home/avocoral/MemFace/williamblake10/williamblake10', metadata_dir='/home/avocoral/MemFace/williamblake10/williamblake10_meta'):
+		def __init__(self, data_dir='/home/avocoral/Downloads/Obamaset/Obama_vid', metadata_dir='/home/avocoral/Downloads/Obamaset/Obama_meta', inference_data_path=None, inference_metadata_path=None, batch_size=2):
 				super().__init__()
 				self.data_dir = data_dir
 				self.metadata_dir = metadata_dir
+				self.batch_size = batch_size
+				self.inference_data_path = inference_data_path
+				self.inference_metadata_path = inference_metadata_path
 
 		def setup(self, stage = 'fit'):
 				if stage == 'fit':
-						NeuralRenderingDataset = NeuralRenderingDataset(self.data_dir, self.metadata_dir)
+						NRDataset = NeuralRenderingDataset(self.data_dir, self.metadata_dir)
 						proportions = [.85, .15]
-						lengths = [int(p * len(NeuralRenderingDataset)) for p in proportions]
-						lengths[-1] = len(AVSpeech) - sum(lengths[:-1])
-						self.train, self.val = random_split(NeuralRenderingDataset, lengths)
+						lengths = [int(p * len(NRDataset)) for p in proportions]
+						lengths[-1] = len(NRDataset) - sum(lengths[:-1])
+						self.train, self.val = random_split(NRDataset, lengths)
+				elif stage == 'inference':
+						self.inference_dataset = NeuralRenderingDataset(self.inference_data_path, self.inference_metadata_path)				
+				else:
+						raise ValueError(f"Invalid stage name: {stage}")
 
 		def train_dataloader(self):
-				return DataLoader(self.train, batch_size=self.batch_size, num_workers=12)
+				return DataLoader(self.train, batch_size=self.batch_size, num_workers=24, drop_last=True)
 
 		def val_dataloader(self):
-				return DataLoader(self.val, batch_size=self.batch_size, num_workers=12)
+				return DataLoader(self.val, batch_size=self.batch_size, num_workers=24, drop_last=True)
+		
+		def inference_dataloader(self):
+				return DataLoader(self.inference_dataset, batch_size=1, shuffle=False)
 
-				
+
 # based on AVSpeech dataset
 class Audio2ExpDataset(Dataset):
 		def __init__(self, audio_embed_dir : str, coeff_dir : str, transform=None):
@@ -256,3 +261,14 @@ if __name__ == '__main__':
 
 		dataset = NeuralRenderingDataset()
 		a = dataset[0]
+		print(f'shape a: {a[0].shape}, {a[1].shape}, {a[2].shape}')
+
+		datamodule = NeuralRenderingDataModule()
+		datamodule.setup()
+		device = 'cuda:0'
+		train_loader = datamodule.train_dataloader()
+		first_batch = next(iter(train_loader))
+		masked_ref_images, orig_images, landmarks3d = first_batch
+		print(f'masked_ref_images.shape: {masked_ref_images.shape}')
+		print(f'orig_images.shape: {orig_images.shape}')
+		print(f'landmarks3d.shape: {landmarks3d.shape}')
