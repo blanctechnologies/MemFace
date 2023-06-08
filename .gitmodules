@@ -4,3 +4,6 @@
 [submodule "emoca"]
 	path = emoca
 	url = https://github.com/leg0m4n/emoca.git
+[submodule "ConvLSTM_pytorch"]
+	path = ConvLSTM_pytorch
+	url = https://github.com/ndrplz/ConvLSTM_pytorch.git

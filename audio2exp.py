@@ -22,6 +22,7 @@ from emoca.gdl.utils.FaceDetector import FAN
 from emoca.gdl.datasets.FaceVideoDataModule import TestFaceVideoDM
 from emoca.gdl_apps.EMOCA.utils.io import save_obj, save_images, save_codes, test, decode
 
+
 wandb_logger = WandbLogger(name='Audio2Exp',project='MemFace')
 pl.seed_everything(42, workers=True)
 #torch.backends.cudnn.determinstic = True

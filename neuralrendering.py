@@ -11,6 +11,8 @@ from utils import construct_explicitmem
 from datasets import NeuralRenderingDataModule
 import torchvision
 
+from ConvLSTM_pytorch.convlstm import ConvLSTM
+
 # Load a pre-trained VGG16 model
 device='cuda'
 # vgg = models.vgg16(pretrained=True).features[:23]
@@ -73,12 +75,12 @@ class NeuralRender(pl.LightningModule):
 
 		self.ImageEncoder = ImageEncoder()
 		self.ExplicitMem = ExplicitMem()
-		self.ConvLSTM = ConvLSTM(input_dim=384, hidden_dim=768)
+		self.ConvLSTM = ConvLSTM(input_dim=384, hidden_dim=768, kernel_size=(3, 3), num_layers=1, batch_first=True)
 		self.ImageDecoder = ImageDecoder()
 		self.discriminator = Discriminator()
 	
 	def forward(self, masked_ref_images, landmarks3d):
-		encoded_images = self.ImageEncoder(masked_ref_images.float())
+		encoded_images, skip_connections = self.ImageEncoder(masked_ref_images.float())
 		memory_images = self.ExplicitMem(landmarks3d.float())
 
 		# memory_images: (60, 384, 4, 7) - > (60, 384, 7, 7) - shape of encoded_images
@@ -92,13 +94,20 @@ class NeuralRender(pl.LightningModule):
 
 		final_encoded_images = encoded_images + interpolated_memory_images
 		final_encoded_images = final_encoded_images.reshape(2, 30, 384, 7, 7)
+		print(f'final_encoded_images.shape before LSTM: {final_encoded_images.shape}')
 		# here we should reshape (bs*T, ...) -> (bs, T, ...)
-		convlstm_result, state = self.ConvLSTM(final_encoded_images)
-		print(f'convlstm_result.shape: {convlstm_result.shape}')
-		# and here we should reshape (bs, T, ...) -> (bs*T, ...)
-		convlstm_result = convlstm_result.reshape(60, 384, 7, 7)
+		lstm_output, state = self.ConvLSTM(final_encoded_images)
+		print(f'len(lstm_output[-1]):{len(lstm_output[-1])})')
+		print(f'len(state[-1]): {len(state[-1])}')
+		print(f'convlstm_output[-1][-1].shape: {lstm_output[-1][-1].shape}')
+		print(f'state.shape: {state[-1][-1].shape}')
 
-		output_images_hat = self.ImageDecoder(convlstm_result)
+		convlstm_result = torch.cat((lstm_output[-1][0], lstm_output[-1][1]), dim=0)
+		
+		# and here we should reshape (bs, T, ...) -> (bs*T, ...)
+		convlstm_result = convlstm_result.reshape(60, 768, 7, 7)
+		print(f'convlstm_result.shape right before ImageDecoder: {convlstm_result.shape}')
+		output_images_hat = self.ImageDecoder(convlstm_result, skip_connections)
 		
 		return output_images_hat
 	
@@ -186,8 +195,20 @@ class ImageEncoder(nn.Module):
 		
 		
 	def forward(self, x):
-		x = nn.Sequential(self.conv1, self.conv2, self.conv3, self.conv4, self.conv5)(x)
-		return x
+		out1 = self.conv1(x)
+		out2 = self.conv2(out1)
+		out3 = self.conv3(out2)
+		out4 = self.conv4(out3)
+		x = self.conv5(out4)
+
+		skip_connections = {
+				'skip1': out1,
+				'skip2': out2,
+				'skip3': out3,
+				'skip4': out4
+		}
+
+		return x, skip_connections
 
 
 class ExplicitMem(nn.Module):
@@ -274,58 +295,6 @@ class LipEncoder(nn.Module):
 		return x
 
 
-class ConvLSTMCell(nn.Module):
-		def __init__(self, input_dim=384, hidden_dim=768):
-				super(ConvLSTMCell, self).__init__()
-
-				self.conv = nn.Conv2d(input_dim + hidden_dim, hidden_dim * 2, kernel_size=3, stride=1, padding=1)
-
-		def forward(self, input_tensor, hidden_state):
-				hidden, cell = hidden_state
-
-				combined = torch.cat([input_tensor, hidden], dim=1)
-				gates = self.conv(combined)
-
-				# Split the output of convolution into hidden and cell state
-				hidden_update, cell_update = torch.chunk(gates, chunks=2, dim=1)
-
-				# Apply the sigmoid function to the hidden and cell state updates
-				hidden_update = torch.sigmoid(hidden_update)
-				cell_update = torch.sigmoid(cell_update)
-
-				# Update the cell and hidden states
-				cell = cell_update * cell + (1 - cell_update) * cell
-				hidden = hidden_update * torch.tanh(cell)
-
-				return hidden, cell
-
-
-class ConvLSTM(nn.Module):
-		def __init__(self, input_dim=384, hidden_dim=768):
-				super().__init__()
-				self.hidden_dim = hidden_dim
-				self.cell_list = nn.ModuleList([
-						ConvLSTMCell(input_dim, hidden_dim)
-				])
-
-		def forward(self, input_tensor):
-				batch_size, time_steps, _, height, width = input_tensor.size()
-
-				hidden_state = (
-						torch.zeros(batch_size, self.hidden_dim, height, width).to(input_tensor.device),
-						torch.zeros(batch_size, self.hidden_dim, height, width).to(input_tensor.device)
-				)
-
-				outputs = []
-				for t in range(time_steps):
-						hidden_state = self.cell_list[0](input_tensor[:, t, :, :, :], hidden_state)
-						outputs.append(hidden_state[0])
-
-				outputs = torch.stack(outputs, dim=1)
-
-				return outputs
-
-
 class ImageDecoder(nn.Module):
 	def __init__(self):
 		super(ImageDecoder, self).__init__()
@@ -340,17 +309,17 @@ class ImageDecoder(nn.Module):
 				nn.Tanh()
 		)
 
-	def forward(self, x):
+	def forward(self, x, skip_connections):
 		print(f'ImageDecoder, input.shape: {x.shape}')
 		x = self.dconv1(x)
 		print(f'ImageDecoder, self.dconv1(x).shape: {x.shape}')
-		x = self.dconv2(x)
+		x = self.dconv2(torch.cat([x, skip_connections['skip1']], dim=1))
 		print(f'ImageDecoder, self.dconv2(x).shape: {x.shape}')
-		x = self.dconv3(x)
+		x = self.dconv3(torch.cat([x, skip_connections['skip2']], dim=1))
 		print(f'ImageDecoder, self.dconv3(x).shape: {x.shape}')
-		x = self.dconv4(x)
+		x = self.dconv4(torch.cat([x, skip_connections['skip3']], dim=1))
 		print(f'ImageDecoder, self.dconv4(x).shape: {x.shape}')
-		x = self.dconv5(x)
+		x = self.dconv5(torch.cat([x, skip_connections['skip4']], dim=1))
 		print(f'ImageDecoder, self.dconv5(x).shape: {x.shape}')
 		x = self.dconv6(x)
 		print(f'ImageDecoder, self.dconv6(x).shape: {x.shape}')
