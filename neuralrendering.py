@@ -75,7 +75,7 @@ class NeuralRender(pl.LightningModule):
 
 		self.ImageEncoder = ImageEncoder()
 		self.ExplicitMem = ExplicitMem()
-		self.ConvLSTM = ConvLSTM(input_dim=384, hidden_dim=768, kernel_size=(3, 3), num_layers=1, batch_first=True)
+		self.ConvLSTM = ConvLSTM(input_dim=384, hidden_dim=384, kernel_size=(3, 3), num_layers=1, batch_first=True)
 		self.ImageDecoder = ImageDecoder()
 		self.discriminator = Discriminator()
 	
@@ -101,11 +101,15 @@ class NeuralRender(pl.LightningModule):
 		print(f'len(state[-1]): {len(state[-1])}')
 		print(f'convlstm_output[-1][-1].shape: {lstm_output[-1][-1].shape}')
 		print(f'state.shape: {state[-1][-1].shape}')
-
-		convlstm_result = torch.cat((lstm_output[-1][0], lstm_output[-1][1]), dim=0)
+		
+		first_elements = [tensor[0] for tensor in lstm_output]
+		second_elements = [tensor[1] for tensor in lstm_output]
+		
+		convlstm_result = torch.cat((torch.cat(first_elements, dim=0), torch.cat(second_elements, dim=0)), dim=0)
+		print(f'convlstm_result.shape before reshape: {convlstm_result.shape}')
 		
 		# and here we should reshape (bs, T, ...) -> (bs*T, ...)
-		convlstm_result = convlstm_result.reshape(60, 768, 7, 7)
+		convlstm_result = convlstm_result.reshape(60, 384, 7, 7)
 		print(f'convlstm_result.shape right before ImageDecoder: {convlstm_result.shape}')
 		output_images_hat = self.ImageDecoder(convlstm_result, skip_connections)
 		
@@ -202,10 +206,10 @@ class ImageEncoder(nn.Module):
 		x = self.conv5(out4)
 
 		skip_connections = {
-				'skip1': out1,
-				'skip2': out2,
-				'skip3': out3,
-				'skip4': out4
+				'skip4': out1,
+				'skip3': out2,
+				'skip2': out3,
+				'skip1': out4
 		}
 
 		return x, skip_connections
