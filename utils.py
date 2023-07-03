@@ -166,8 +166,8 @@ def get_Om(pose, shape, exp, emoca=None, batch_size=64):
 	"""
 	returns 3d coordinates of Flame model, based on pose, shape, exp
 	"""
-	path_to_models = "root/MemFace/emoca/assets/EMOCA/models"
-	model_name = 'EMOCA'
+	path_to_models = "/root/MemFace/emoca/assets/EMOCA/models"
+	model_name = 'EMOCA_v2_lr_mse_20'
 	mode = 'detail'
 	
 	if emoca == None:
@@ -182,7 +182,7 @@ def get_Om(pose, shape, exp, emoca=None, batch_size=64):
 		print(f'pose.shape: {pose.shape}')
 		print(f'shape.shape: {shape.shape}')
 		print(f'exp.shape: {exp.shape}')
-		verts, landmarks2d, landmarks3d_hat = emoca.deca.flame(shape_params=shape, expression_params=exp, pose_params=pose)
+		verts, landmarks2d, landmarks3d_hat, _  = emoca.deca.flame(shape_params=shape, expression_params=exp, pose_params=pose)
 		print(f'landmarks3d_hat.shape after get_Om: {landmarks3d_hat.shape}')
 		sequence_length = landmarks3d_hat.shape[0] // batch_size
 		landmarks3d_hat = landmarks3d_hat.view(batch_size, sequence_length, landmarks3d_hat.shape[1], landmarks3d_hat.shape[2])
@@ -194,7 +194,7 @@ def get_Om(pose, shape, exp, emoca=None, batch_size=64):
 		codedict['shapecode'] = shape
 		codedict['expcode'] = exp
 		codedict['posecode'] = pose
-		verts, landmarks2d, landmarks3d_hat = emoca.deca.flame(shape_params=shape, expression_params=exp, pose_params=pose)
+		verts, landmarks2d, landmarks3d_hat, _ = emoca.deca.flame(shape_params=shape, expression_params=exp, pose_params=pose)
 	# 	print(f'landmarks3d: {landmarks3d}')
 	
 	return landmarks3d_hat
