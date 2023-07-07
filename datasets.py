@@ -39,7 +39,7 @@ class NeuralRenderingDataset(Dataset):
 					# Check if the files exists
 					if not os.path.exists(landmarks3d_path):
 									raise FileNotFoundError(f"Some files are missing for frame {frame_dir}")
-					# landmarks2d_path = os.path.join(self.metadata_dir, 'landmarks', frame_dir+'.pkl')
+					landmarks2d_path = os.path.join(self.metadata_dir, 'landmarks', frame_dir+'.pkl')
 					# load landmarks3d
 					landmarks3d = torch.from_numpy(np.load(landmarks3d_path))[:, 48:, :]
 					
@@ -57,6 +57,27 @@ class NeuralRenderingDataset(Dataset):
 					# Multiply the inverted mask with the original image
 					masked_image = cv2.bitwise_and(original_image, original_image, mask=inverted_mask)
 					
+					# mask the mouth area
+					objects = []
+					with (open(landmarks2d_path, "rb")) as openfile:
+						while True:
+							try:
+								objects.append(pickle.load(openfile))
+							except EOFError:
+								break
+					
+					mouth_landmarks = torch.Tensor([[[int(objects[1][i][0]), int(objects[1][i][1])] for i in range(len(objects[1])) if 48 <= i < 69]])
+					
+					# lip region crop + 1pixel boundary around 
+					minX = int(mouth_landmarks[:, :, 0].min() - 1)
+					maxX = int(mouth_landmarks[:, :, 0].max() + 1)
+					minY = int(mouth_landmarks[:, :, 1].min() - 1)
+					maxY = int(mouth_landmarks[:, :, 1].max() + 1)
+					masked_image = cv2.rectangle(masked_image, (minX, minY), (maxX, maxY), (0, 0, 0), -1)	
+				
+					# image_path = f"/home/avocoral/MemFace/test_folder/masked_image{i}.png"
+					# cv2.imwrite(image_path, masked_image)
+					
 					# channel_wise concat of masked image and ref image
 					b1, g1, r1 = cv2.split(masked_image)
 					b2, g2, r2 = cv2.split(ref_image)
@@ -65,13 +86,22 @@ class NeuralRenderingDataset(Dataset):
 					
 					# should i transpose ref image and masked image as well? - for consistancy - yes
 					masked_ref_images.append(merged_image_tensor)
-					orig_images.append(torch.from_numpy(np.transpose(original_image, (2, 0, 1))))
+					original_image = cv2.cvtColor(original_image, cv2.COLOR_BGR2RGB)
+					orig_images.append(torch.from_numpy(original_image).permute(2, 0, 1))
 					landmarks3d_final.append(landmarks3d)
 				
-				# masked_ref_images = torch.stack(masked_ref_images)
+				# stack and normalize
+				# mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+				# std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+				# orig_images = (torch.stack(orig_images) - mean) / std
+				# landmarks3d = torch.stack(landmarks3d_final)
+				# masked_ref_images = ((torch.stack(masked_ref_images) - mean.repeat(1, 2, 1, 1)) / std.repeat(1, 2, 1, 1))
+				
+				# without normalization
 				orig_images = torch.stack(orig_images)
 				landmarks3d = torch.stack(landmarks3d_final)
 				masked_ref_images = torch.stack(masked_ref_images)
+				
 				
 				# return (masked_img, ref_image), original_image, landmarks3d 
 				return masked_ref_images, orig_images, landmarks3d
@@ -85,6 +115,9 @@ class NeuralRenderingDataModule(pl.LightningDataModule):
 				self.batch_size = batch_size
 				self.inference_data_path = inference_data_path
 				self.inference_metadata_path = inference_metadata_path
+				self.transform = transforms.Compose([
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize the pixel values
+        ])
 
 		def setup(self, stage = 'fit'):
 				if stage == 'fit':

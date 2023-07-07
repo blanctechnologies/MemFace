@@ -392,6 +392,7 @@ def load_tensor_image(image_name):
 	with Image.open(image_name) as image:
 		# only load the lower part of the image with lips
 		image = image.crop((0, image.size[1]//2, image.size[0], image.size[1]))
+		image = image.convert("RGB")
 		tensor_image = torch.ByteTensor(torch.ByteStorage.from_buffer(image.tobytes()))
 		tensor_image = tensor_image.view(image.size[1], image.size[0], -1)
 		tensor_image = tensor_image.permute(2, 0, 1).float().div(255.0)
@@ -410,7 +411,7 @@ if __name__ == '__main__':
 	# print(f'betas: {betas}')
 	# landmarks3d = get_Om(posecode, shapecode, expcode)
 	# print(landmarks3d)
-	move_files_around()
+	# move_files_around()
 	
 	# --- to load the dataloader and take the 1st batch ---
 	# datamodule = Audio2ExpDataModule()
@@ -436,8 +437,8 @@ if __name__ == '__main__':
 	# 		print(f'! video #{i} preprocessed !')
 	# 		filepath = os.path.join(dataset_dir, video_name)
 	# 
-	# filepath = '/home/avocoral/Downloads/Obamaset/Obama_vid.mp4'
-	# neural_rendering_facereconstruction(filepath)
+	filepath = '/home/avocoral/Downloads/Obamaset/Obama_vid.mp4'
+	neural_rendering_facereconstruction(filepath)
 
 	# K_nr, V_nr = construct_explicitmem()
 	# print(f'K_nr.shape: {K_nr.shape}')

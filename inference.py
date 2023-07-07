@@ -19,9 +19,34 @@ import pytorch_lightning as pl
 from datasets import NeuralRenderingDataModule
 from neuralrendering import NeuralRender
 
+import shutil
+import os
 
 class AdaptedNeuralRender(NeuralRender):
 	pass 
+
+
+def build_inference_dataset(orig_dataset_filepath='/home/avocoral/Downloads/Obamaset/Obama_vid'):
+	output_filepath = '/home/avocoral/Downloads/Obamaset/inference_dataset'
+	source_frames_dir = [str(i).zfill(6)+'_000' for i in range(1, 450)]
+	target_frames_dir = [str(i).zfill(6)+'_000' for i in range(5844, 6295)]
+	print(f'len(source_frames_dir): {len(source_frames_dir)}')
+	print(f'len(target_frames_dir): {len(target_frames_dir)}')
+	for i, folder in enumerate(source_frames_dir):
+		# move
+		source_frame_path = os.path.join(orig_dataset_filepath, folder)
+		shutil.move(source_frame_path, output_filepath)
+		print(f'folder {folder} moved.')
+
+		# delete source geometry_coarse.png
+		os.remove(os.path.join(output_filepath, folder, 'geometry_coarse.png'))
+		print(f'source geometry_coarse.png deleted.')
+		
+		# move target geometry_coarse.png
+		target_frame_path = os.path.join(orig_dataset_filepath, folder, 'geometry_coarse.png')
+		target_frame_destination = os.path.join(output_filepath, target_frames_dir[i], 'geometry_coarse.png')
+		shutil.move(target_frame_path, target_frame_destination)
+		print(f'target geometry_coarse.png from {folder} moved to {source_folders[k]}')
 
 
 def adapt_NR_model():
@@ -44,7 +69,7 @@ def inference():
 	device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 	# Load the trained model
-	checkpoint_filepath = ''
+	checkpoint_filepath = '/home/avocoral/MemFace/checkpoints/MemFace/yz2d7all/checkpoints/yz2d7all.ckpt'
 	model = NeuralRender.load_from_checkpoint(checkpoint_filepath)
 	model = model.to(device)
 	model.eval()  # Set the model to evaluation mode
@@ -59,4 +84,5 @@ def inference():
 		with torch.no_grad():
 			outputs = model(inputs)	
 
-
+if __name__ == "__main__":
+	build_inference_dataset()
