@@ -198,7 +198,7 @@ class Audio2ExpDataset(Dataset):
 
 
 class Audio2ExpDataModule(pl.LightningDataModule):
-		def __init__(self, audio_dir: str = '/mnt/sda/AVSpeech/audio_encodings', coeff_dir: str = '/mnt/sda/AVSpeech/video', batch_size: int = 16):
+		def __init__(self, audio_dir: str = '/root/dataset_v1_audio', coeff_dir: str = '/root/dataset_v2_video', batch_size: int = 16):
 				super().__init__()
 				self.audio_dir = audio_dir
 				self.coeff_dir = coeff_dir
@@ -242,16 +242,16 @@ class Audio2ExpDataModule(pl.LightningDataModule):
 				
 				device = 'cuda:0'
 
-				packed_audio_embed = torch.nn.utils.rnn.pack_padded_sequence(padded_audio_embed, audio_embed_lengths, batch_first=True, enforce_sorted=False).to(torch.cuda.current_device())
-				packed_exp = torch.nn.utils.rnn.pack_padded_sequence(padded_exp, exp_lengths, batch_first=True, enforce_sorted=False).to(torch.cuda.current_device())
-				packed_pose = torch.nn.utils.rnn.pack_padded_sequence(padded_pose, pose_lengths, batch_first=True, enforce_sorted=False).to(torch.cuda.current_device())
-				packed_shape = torch.nn.utils.rnn.pack_padded_sequence(padded_shape, shape_lengths, batch_first=True, enforce_sorted=False).to(torch.cuda.current_device())
-				packed_landmarks3d = torch.nn.utils.rnn.pack_padded_sequence(padded_landmarks3d, landmarks3d_lengths, batch_first=True, enforce_sorted=False).to(torch.cuda.current_device())
+				packed_audio_embed = torch.nn.utils.rnn.pack_padded_sequence(padded_audio_embed, audio_embed_lengths, batch_first=True, enforce_sorted=False).to('cuda')
+				packed_exp = torch.nn.utils.rnn.pack_padded_sequence(padded_exp, exp_lengths, batch_first=True, enforce_sorted=False).to('cuda')
+				packed_pose = torch.nn.utils.rnn.pack_padded_sequence(padded_pose, pose_lengths, batch_first=True, enforce_sorted=False).to('cuda')
+				packed_shape = torch.nn.utils.rnn.pack_padded_sequence(padded_shape, shape_lengths, batch_first=True, enforce_sorted=False).to('cuda')
+				packed_landmarks3d = torch.nn.utils.rnn.pack_padded_sequence(padded_landmarks3d, landmarks3d_lengths, batch_first=True, enforce_sorted=False).to('cuda')
 
 				# padded_batch = torch.nn.utils.rnn.pad_sequence(batch, batch_first=True)
 				# mask = (padded_batch != 0)
 				# packed_batch = torch.nn.utils.rnn.pack_padded_sequence(padded_batch, mask.sum(1), batch_first=True, enforce_sorted=False)
-				return packed_audio_embed, packed_exp, packed_pose, packed_shape, packed_landmarks3d, audio_embed_lengths
+				return packed_audio_embed, packed_exp, packed_pose, packed_shape, packed_landmarks3d
 
 if __name__ == '__main__':
 		# datamodule = Audio2ExpDataModule()

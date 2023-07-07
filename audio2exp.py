@@ -21,13 +21,23 @@ from emoca.gdl_apps.EMOCA.utils.load import load_model
 from emoca.gdl.utils.FaceDetector import FAN
 from emoca.gdl.datasets.FaceVideoDataModule import TestFaceVideoDM
 from emoca.gdl_apps.EMOCA.utils.io import save_obj, save_images, save_codes, test, decode
+from pytorch_lightning.strategies.ddp import DDPStrategy
 
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 wandb_logger = WandbLogger(name='Audio2Exp',project='MemFace')
 pl.seed_everything(42, workers=True)
 #torch.backends.cudnn.determinstic = True
 # torch.backends.cudnn.benchmark = False
 # device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+checkpoint_callback = ModelCheckpoint(
+    dirpath="/root/MemFace/MemFace/version_None/checkpoints",
+    filename="model-{epoch:02d}",
+    monitor="val_loss",
+    mode="min",
+    save_top_k=1,  # Save the best model
+    save_last=True  # Save the last epoch's model
+)
 
 class Audio2Exp(pl.LightningModule):
 	def __init__(self):
@@ -46,6 +56,15 @@ class Audio2Exp(pl.LightningModule):
 		self.encoder = Encoder()
 		self.implicitmem = ImplicitMem(self.keys, self.values)
 		self.decoder = Decoder() 
+		# emoca initialization
+
+		path_to_models = "/root/MemFace/emoca/assets/EMOCA/models"
+		model_name = 'EMOCA_v2_lr_mse_20'
+		mode = 'detail'
+
+		self.emoca, conf = load_model(path_to_models, model_name, mode)
+		self.emoca.cuda()
+		self.emoca.eval()
 
 	def forward(self, packed_audio_embed):
 
@@ -78,7 +97,7 @@ class Audio2Exp(pl.LightningModule):
 				for param in self.decoder.parameters():
 						param.requires_grad = False
 		
-		packed_audio_embed, packed_exp, packed_pose, packed_shape, packed_landmarks3d, sequence_lengths = batch
+		packed_audio_embed, packed_exp, packed_pose, packed_shape, packed_landmarks3d = batch
 		# packed_audio_embed = packed_audio_embed.to(device)
 		# packed_exp = packed_exp.to(device)
 		# packed_pose = packed_pose.to(device)
@@ -98,7 +117,7 @@ class Audio2Exp(pl.LightningModule):
 		mse_loss = torch.nn.MSELoss()	
 		l2_exp = mse_loss(exp_hat, exp)
 		print(f'training loop pose.shape after forward pass and before get_Om: {pose.shape}')
-		landmarks3d_hat = get_Om(pose, shape, exp_hat, emoca, batch_size=64)
+		landmarks3d_hat = get_Om(pose, shape, exp_hat, self.emoca, batch_size=16)
 		# landmarks3d_hat = landmarks3d
 		print(f'training loop landmarks3d.shape before squeeze: {landmarks3d.shape}')
 		landmarks3d = torch.squeeze(landmarks3d, 2)
@@ -116,7 +135,7 @@ class Audio2Exp(pl.LightningModule):
 		return loss
 
 	def validation_step(self, batch, batch_idx):
-		packed_audio_embed, packed_exp, packed_pose, packed_shape, packed_landmarks3d, sequence_lengths = batch
+		packed_audio_embed, packed_exp, packed_pose, packed_shape, packed_landmarks3d = batch
 		# packed_audio_embed = packed_audio_embed.to(device)
 		# packed_exp = packed_exp.to(device)
 		# packed_pose = packed_pose.to(device)
@@ -138,7 +157,7 @@ class Audio2Exp(pl.LightningModule):
 		mse_loss = torch.nn.MSELoss()	
 		l2_exp = mse_loss(exp_hat, exp)
 		print(f'val pose.shape after forward pass and before get_Om: {pose.shape}')
-		landmarks3d_hat = get_Om(pose, shape, exp_hat, emoca, batch_size=64)
+		landmarks3d_hat = get_Om(pose, shape, exp_hat, self.emoca, batch_size=16)
 		
 		# landmarks3d_hat = landmarks3d
 		print(f'val landmarks3d_hat.shape after get_Om(): {landmarks3d_hat.shape}')
@@ -206,7 +225,7 @@ class ImplicitMem(nn.Module):
 		
 		# do we need to unflatten the output of dim (q_len_flat, 64) back into batches?
 		# batch_size = self.batch_size
-		batch_size = 64
+		batch_size = 16
 		print(f'output.shape inside ImplicitMem: {output.shape}')
 		orig_shape_output = output.view(batch_size, max_len, 64)
 		return orig_shape_output
@@ -310,17 +329,10 @@ if __name__ == '__main__':
 		train_dataloader = datamodule.train_dataloader()
 		val_dataloader = datamodule.val_dataloader()
 		
-		path_to_models = "/home/avocoral/MemFace/emoca/assets/EMOCA/models"
-		model_name = 'EMOCA'
-		mode = 'detail'
-		
-		emoca, conf = load_model(path_to_models, model_name, mode)
-		emoca.cuda()
-		emoca.eval()
-
 		# callbacks=[EarlyStopping(monitor="val_loss", mode="min")], 
 		# fast_dev_run=True,
-		trainer = pl.Trainer(default_root_dir='checkpoints', callbacks=[EarlyStopping(monitor="val_loss", mode="min")], logger=wandb_logger, gpus=[0,1,2,3], accelerator="gpu", distributed_backend='ddp')
+                # EarlyStopping(monitor="val_loss", mode="min", patience=20)
+		trainer = pl.Trainer(strategy = DDPStrategy(find_unused_parameters=True), default_root_dir='checkpoints', callbacks=[checkpoint_callback], logger=wandb_logger, accelerator="gpu", devices=4)
 		trainer.fit(audio2exp, train_dataloader, val_dataloader)
 
 
