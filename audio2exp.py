@@ -23,12 +23,21 @@ from emoca.gdl.datasets.FaceVideoDataModule import TestFaceVideoDM
 from emoca.gdl_apps.EMOCA.utils.io import save_obj, save_images, save_codes, test, decode
 from pytorch_lightning.strategies.ddp import DDPStrategy
 
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 wandb_logger = WandbLogger(name='Audio2Exp',project='MemFace')
 pl.seed_everything(42, workers=True)
 #torch.backends.cudnn.determinstic = True
 # torch.backends.cudnn.benchmark = False
 # device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+checkpoint_callback = ModelCheckpoint(
+    dirpath="/root/MemFace/MemFace/version_None/checkpoints",
+    filename="model-{epoch:02d}",
+    monitor="val_loss",
+    mode="min",
+    save_top_k=1,  # Save the best model
+    save_last=True  # Save the last epoch's model
+)
 
 class Audio2Exp(pl.LightningModule):
 	def __init__(self):
@@ -322,7 +331,8 @@ if __name__ == '__main__':
 		
 		# callbacks=[EarlyStopping(monitor="val_loss", mode="min")], 
 		# fast_dev_run=True,
-		trainer = pl.Trainer(strategy = DDPStrategy(find_unused_parameters=True), default_root_dir='checkpoints', callbacks=[EarlyStopping(monitor="val_loss", mode="min")], logger=wandb_logger, accelerator="gpu", devices=4)
+                # EarlyStopping(monitor="val_loss", mode="min", patience=20)
+		trainer = pl.Trainer(strategy = DDPStrategy(find_unused_parameters=True), default_root_dir='checkpoints', callbacks=[checkpoint_callback], logger=wandb_logger, accelerator="gpu", devices=4)
 		trainer.fit(audio2exp, train_dataloader, val_dataloader)
 
 
