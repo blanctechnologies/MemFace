@@ -331,7 +331,7 @@ if __name__ == '__main__':
 		
 		# callbacks=[EarlyStopping(monitor="val_loss", mode="min")], 
 		# fast_dev_run=True,
-                # EarlyStopping(monitor="val_loss", mode="min", patience=20)
+		# EarlyStopping(monitor="val_loss", mode="min", patience=20)
 		trainer = pl.Trainer(strategy = DDPStrategy(find_unused_parameters=True), default_root_dir='checkpoints', callbacks=[checkpoint_callback], logger=wandb_logger, accelerator="gpu", devices=4)
 		trainer.fit(audio2exp, train_dataloader, val_dataloader)
 
