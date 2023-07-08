@@ -212,6 +212,9 @@ class Audio2ExpDataModule(pl.LightningDataModule):
 						lengths[-1] = len(AVSpeech) - sum(lengths[:-1])
 						self.train, self.val = random_split(AVSpeech, lengths)
 						# self.train = AVSpeech
+                                elif stage == 'adaptation':
+                                                AVSpeech = Audio2ExpDataset(self.audio_dir, self.coeff_dir)
+                                                self.train = AVSpeech
 
 		def train_dataloader(self):
 				return DataLoader(self.train, batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, drop_last=True)
