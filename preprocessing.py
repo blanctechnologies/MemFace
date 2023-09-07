@@ -93,10 +93,12 @@ def getAudioEncodingWorker(worker_id):
 
 def getAudioEncoding(waveform, processor, model):
 		# Common Voice average clip duration is 4.7 seconds, VoxCeleb duration 145.0 / 8.2 / 4.0 (max, avg, min), AVSpeech 5-10 seconds
+		print(f'len(waveform): {len(waveform)}')
 		chunk_duration = 5 # sec
 		padding_duration = 1 # sec
 		chunk_len = chunk_duration*sample_rate
 		number_of_chunks = len(waveform) // chunk_len + ((len(waveform) % chunk_len) != 0)
+		print(f'number_of_chunks: {number_of_chunks}')
 		input_padding_len = int(padding_duration*sample_rate)
 		output_padding_len = model._get_feat_extract_output_lengths(input_padding_len)
 		all_preds = []
@@ -127,16 +129,26 @@ def getAudioEncoding(waveform, processor, model):
 				all_preds.append(predicted_ids.cpu())
 		
 		transcription=processor.decode(torch.cat(all_preds))
-		
+			
 		return transcription, all_logits
 
 
-def getAudioEncodingSimplified(audio_location):
+def getAudioEncodingSimplified(audio_location, audio_encoding_location):
 		processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-xlsr-53-espeak-cv-ft")
 		model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-xlsr-53-espeak-cv-ft").to(device)
 		sample_rate = 16000
 		
 		waveform, _ = librosa.load(audio_location, sr=sample_rate)
+		
+		input_values = processor(waveform, sampling_rate=sample_rate, return_tensors="pt").input_values
+		print(f'input_values.shape: {input_values.shape}')
+		with torch.no_grad():
+				all_logits = model(input_values.to(device))
+				print(f'model(input_values.to(device)): {all_logits}')
+				logits = all_logits.logits[0]
+		print(f'logits.shape: {logits.shape}')
+		torch.save(logits, audio_encoding_location)
+
 		
 
 def extractAudioEncodings():
@@ -356,7 +368,7 @@ if __name__ == '__main__':
 	# orig_dir = '/mnt/sda/AVSpeech/clips_unpacked_test/xab' 
 	# get_dataset_length(preprocessed_vids_dir, orig_dir)
 	
-	count_all_clean_data()
-
-
-
+	# count_all_clean_data()
+	audio_location = '/home/avocoral/Downloads/Obamaset/Obama_vid_30.wav'
+	audio_encoding_location = '/home/avocoral/Downloads/Obamaset/Obama_vid_30.pt'
+	getAudioEncodingSimplified(audio_location, audio_encoding_location)

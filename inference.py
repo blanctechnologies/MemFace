@@ -84,5 +84,8 @@ def inference():
 		with torch.no_grad():
 			outputs = model(inputs)	
 
-if __name__ == "__main__":
-	build_inference_dataset()
+# if __name__ == "__main__":
+# 	build_inference_dataset()
+
+
+

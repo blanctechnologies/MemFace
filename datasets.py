@@ -12,7 +12,7 @@ import torchvision.transforms as transforms
 import pickle
 
 class NeuralRenderingDataset(Dataset):
-		def __init__(self, data_dir='/home/avocoral/Downloads/Obamaset/Obama_vid', metadata_dir='/home/avocoral/Downloads/Obamaset/Obama_meta'):
+		def __init__(self, data_dir='/home/avocoral/Downloads/Obamaset/Obama_vid/Obama', metadata_dir='/home/avocoral/Downloads/Obamaset/Obama_meta'):
 				self.data_dir = data_dir
 				self.metadata_dir = metadata_dir
 
@@ -34,7 +34,7 @@ class NeuralRenderingDataset(Dataset):
 
 					img_path = os.path.join(self.data_dir, frame_dir, 'inputs.png')
 					mask_path = os.path.join(self.data_dir, frame_dir, 'mask.png')
-					ref_path = os.path.join(self.data_dir, frame_dir, 'geometry_coarse.png')
+					ref_path = os.path.join(self.data_dir, frame_dir, 'geometry_detail.png')
 					landmarks3d_path = os.path.join(self.data_dir, frame_dir, 'landmarks3d.npy')
 					# Check if the files exists
 					if not os.path.exists(landmarks3d_path):
@@ -108,7 +108,7 @@ class NeuralRenderingDataset(Dataset):
 
 
 class NeuralRenderingDataModule(pl.LightningDataModule):
-		def __init__(self, data_dir='/home/avocoral/Downloads/Obamaset/Obama_vid', metadata_dir='/home/avocoral/Downloads/Obamaset/Obama_meta', inference_data_path=None, inference_metadata_path=None, batch_size=2):
+		def __init__(self, data_dir='/home/avocoral/Downloads/Obamaset/Obama_vid/Obama', metadata_dir='/home/avocoral/Downloads/Obamaset/Obama_meta', inference_data_path=None, inference_metadata_path=None, batch_size=2):
 				super().__init__()
 				self.data_dir = data_dir
 				self.metadata_dir = metadata_dir
@@ -116,8 +116,8 @@ class NeuralRenderingDataModule(pl.LightningDataModule):
 				self.inference_data_path = inference_data_path
 				self.inference_metadata_path = inference_metadata_path
 				self.transform = transforms.Compose([
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize the pixel values
-        ])
+						transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize the pixel values
+				])
 
 		def setup(self, stage = 'fit'):
 				if stage == 'fit':
@@ -149,27 +149,36 @@ class Audio2ExpDataset(Dataset):
 				self.transform = transform
 
 		def __len__(self):
-				return len(os.listdir(self.coeff_dir))
+				# return len(os.listdir(self.coeff_dir))
+				return 1
 
 		def __getitem__(self, idx):
 				print(f'ifx: {idx}')
 				sample_name = os.listdir(self.coeff_dir)[idx]
-				audio_embed_filepath = os.path.join(self.audio_embed_dir, sample_name+'.pt')
-				audio_embed = torch.cat(torch.load(audio_embed_filepath), dim=0)
+				# audio_embed_filepath = os.path.join(self.audio_embed_dir, sample_name+'.pt')
+				audio_embed_filepath = os.path.join(self.audio_embed_dir, 'Obama.pt')
+				# audio_embed = torch.cat(torch.load(audio_embed_filepath), dim=0)
+				audio_embed = torch.load(audio_embed_filepath)
+				print(f'audio_embed shape: {audio_embed.shape}')
 				print(f'audio embedding name: {audio_embed_filepath}')
 				# print(f'foldername = {sample_name[:-3]}')
-				coeff_folderpath = os.path.join(self.coeff_dir, sample_name)
+				# coeff_folderpath = os.path.join(self.coeff_dir, sample_name)
+				coeff_folderpath = self.coeff_dir
 				# print(f'coeff_folderpath: {coeff_folderpath}')
-
-				# print(f'audio_embed shape: {audio_embed.shape}')
+				# audioembeds every 50ms, so 1 second of audio is 50 elements, 30 seconds is 1500
+				audio_embed = audio_embed[:1500]
+				print(f'audio_embed shape: {audio_embed.shape}')
 				# print(f'audio_embed: {audio_embed}')	
 								
 				exp	= []
 				pose = []
 				shape = []
 				Om = []
-
+				sample_len = len(os.listdir(coeff_folderpath))
+				
 				for i, frame_name in enumerate(os.listdir(coeff_folderpath)):
+						if i>=900:
+								continue
 						exp.append(torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'exp.npy'))))
 						pose.append(torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'pose.npy'))))
 						shape.append(torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'shape.npy'))))
@@ -190,7 +199,7 @@ class Audio2ExpDataset(Dataset):
 				audio_embed = F.interpolate(audio_embed.T.unsqueeze(0), size=[video_frames_num], mode='nearest').squeeze(0).T
 
 				# print(f'new audio_embed shape orig: {audio_embed.shape}')
-				# print(f"exp_coeff shape orig: {exp.shape}")
+				print(f"exp_coeff shape orig: {exp.shape}")
 				# print(f"pose_coeff shape orig: {pose.shape}")
 				# print(f"shape_coeff shape orig: {shape.shape}")
 				# print(f"landmarks3d shape orig: {landmarks3d.shape}")
@@ -198,29 +207,44 @@ class Audio2ExpDataset(Dataset):
 
 
 class Audio2ExpDataModule(pl.LightningDataModule):
-		def __init__(self, audio_dir: str = '/root/dataset_v1_audio', coeff_dir: str = '/root/dataset_v2_video', batch_size: int = 16):
+		def __init__(self, audio_dir: str = '/home/avocoral/Downloads/Obamaset/Obama_audio', coeff_dir: str = '/home/avocoral/Downloads/Obamaset/Obama_vid/Obama', batch_size: int = 1):
 				super().__init__()
 				self.audio_dir = audio_dir
 				self.coeff_dir = coeff_dir
 				self.batch_size = batch_size
+				self._has_setup_fit = False
+				self._has_setup_adaptation = False
+				self._has_setup_inference = False
 
 		def setup(self, stage = 'fit'):
+				# if stage == 'fit':
+				# 		AVSpeech = Audio2ExpDataset(self.audio_dir, self.coeff_dir)
+				# 		proportions = [.85, .15]
+				# 		lengths = [int(p * len(AVSpeech)) for p in proportions]
+				# 		lengths[-1] = len(AVSpeech) - sum(lengths[:-1])
+				# 		self.train, self.val = random_split(AVSpeech, lengths)
+				# 		# self.train = AVSpeech
+				# 		self._has_setup_fit = True
 				if stage == 'fit':
 						AVSpeech = Audio2ExpDataset(self.audio_dir, self.coeff_dir)
-						proportions = [.85, .15]
-						lengths = [int(p * len(AVSpeech)) for p in proportions]
-						lengths[-1] = len(AVSpeech) - sum(lengths[:-1])
-						self.train, self.val = random_split(AVSpeech, lengths)
-						# self.train = AVSpeech
-                                elif stage == 'adaptation':
-                                                AVSpeech = Audio2ExpDataset(self.audio_dir, self.coeff_dir)
-                                                self.train = AVSpeech
+						self.train = AVSpeech
+						self._has_setup_fit = True
+				elif stage == 'adaptation':
+						AVSpeech = Audio2ExpDataset(self.audio_dir, self.coeff_dir)
+						self.train = AVSpeech
+						# self.val = AVSpeech[1]
+						self._has_setup_adaptation = True
+				elif stage == 'inference':
+						AVSpeech = Audio2ExpDataset(self.audio_dir, self.coeff_dir)
+						self.inference = AVSpeech
+						self._has_setup_inference = True
+
 
 		def train_dataloader(self):
 				return DataLoader(self.train, batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, drop_last=True)
 
 		def val_dataloader(self):
-				return DataLoader(self.val, batch_size=self.batch_size, num_workers=0, collate_fn=self.collate_fn, drop_last=True)
+				return DataLoader(self.val, batch_size=1, num_workers=0, collate_fn=self.collate_fn)
 		
 		def collate_fn(self, batch):
 				batch = sorted(batch, key=lambda x: len(x[0]), reverse=True)

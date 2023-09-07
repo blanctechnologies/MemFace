@@ -21,9 +21,12 @@ from emoca.gdl_apps.EMOCA.utils.load import load_model
 from emoca.gdl.utils.FaceDetector import FAN
 from emoca.gdl.datasets.FaceVideoDataModule import TestFaceVideoDM
 from emoca.gdl_apps.EMOCA.utils.io import save_obj, save_images, save_codes, test, decode
-from pytorch_lightning.strategies.ddp import DDPStrategy
 
 from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.plugins import DDPPlugin
+
+import torchmetrics
+from torchmetrics.functional.pairwise import pairwise_cosine_similarity
 
 wandb_logger = WandbLogger(name='Audio2Exp',project='MemFace')
 pl.seed_everything(42, workers=True)
@@ -46,19 +49,22 @@ class Audio2Exp(pl.LightningModule):
 		# self.keys = nn.Embedding(M, d_k)
 		# self.values = nn.Embedding(M, d_v)
 		
-		self.keys = torch.nn.Parameter(torch.nn.init.xavier_uniform_(torch.empty(1000, 64)))
-		self.values = torch.nn.Parameter(torch.nn.init.xavier_uniform_(torch.empty(1000, 64)))
+		# self.keys = torch.nn.Parameter(torch.randn(1000, 64))
+		# self.values = torch.nn.Parameter(torch.randn(1000, 64))
+		# self.keys = nn.Linear(1000, 64)
+		# self.values = nn.Linear(1000, 64)
 		self.M = 1000 # number of keys and values => output of f_enc is 1000
 		self.d_k = 64
 		self.d_v = 64
 		
 		
 		self.encoder = Encoder()
-		self.implicitmem = ImplicitMem(self.keys, self.values)
+		# self.implicitmem = ImplicitMem(self.keys, self.values)
+		self.implicitmem = ImplicitMem()
 		self.decoder = Decoder() 
 		# emoca initialization
 
-		path_to_models = "/root/MemFace/emoca/assets/EMOCA/models"
+		path_to_models = "/home/avocoral/MemFace/emoca/assets/EMOCA/models"
 		model_name = 'EMOCA_v2_lr_mse_20'
 		mode = 'detail'
 
@@ -67,8 +73,9 @@ class Audio2Exp(pl.LightningModule):
 		self.emoca.eval()
 
 	def forward(self, packed_audio_embed):
-
+		print(f'packed_audio_embed in forward of Audio2Exp: {packed_audio_embed}')
 		audiofeature = self.encoder(packed_audio_embed)
+		print(f'audiofeature in forward of Audio2Exp: {audiofeature}')
 		# encoded_audiofeature is packed, cause it's easier, we need to unpack it
 				
 		unpacked_audiofeature, lengths = torch.nn.utils.rnn.pad_packed_sequence(audiofeature, batch_first=True)
@@ -77,7 +84,14 @@ class Audio2Exp(pl.LightningModule):
 		output = self.decoder(unpacked_audiofeature + self.implicitmem(audiofeature), lengths)
 		return output
 
+	# def L_reg(self, K, V):
+	# 	corr_K = torch.sum(pairwise_cosine_similarity(K))  # Use the metric
+	# 	corr_V = torch.sum(pairwise_cosine_similarity(V))  # Use the metric
+	# 	return (corr_K + corr_V)/(self.M * (self.M - 1))  # Average of the two correlations
+
+
 	def training_step(self, batch, batch_idx):
+		
 		# during first half of training alterating the learning of memory vs other parameters
 		# how the first half is determined?
 		# maybe it's done manually, just comment out this block in some time, but still how
@@ -103,33 +117,58 @@ class Audio2Exp(pl.LightningModule):
 		# packed_pose = packed_pose.to(device)
 		# packed_shape = packed_shape.to(device)
 		# packed_landmarks3d = packed_landmarks3d.to(device)
+		
 
 		audio_embed, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_audio_embed, batch_first=True)
 		exp, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_exp, batch_first=True)
 		pose, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_pose, batch_first=True)
 		shape, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_shape, batch_first=True)
 		landmarks3d, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_landmarks3d, batch_first=True)
-		print(f'training loop audio_embed.shape: {audio_embed.shape}')	
+		
+		batch_size = audio_embed.size(0)
 		# audio_embed, exp, pose, shape, landmarks3d = batch.to(device)
 		exp_hat = self(packed_audio_embed)
 		# exp_hat, lengths = torch.nn.utils.rnn.pad_packed_sequence(packed_exp_hat, batch_first=True)
 		
 		mse_loss = torch.nn.MSELoss()	
 		l2_exp = mse_loss(exp_hat, exp)
-		print(f'training loop pose.shape after forward pass and before get_Om: {pose.shape}')
-		landmarks3d_hat = get_Om(pose, shape, exp_hat, self.emoca, batch_size=16)
+		batch_size = 1
+		# print(f'training loop pose.shape after forward pass and before get_Om: {pose.shape}')
+		landmarks3d_hat = get_Om(pose, shape, exp_hat, self.emoca, batch_size=batch_size)
 		# landmarks3d_hat = landmarks3d
-		print(f'training loop landmarks3d.shape before squeeze: {landmarks3d.shape}')
+		# print(f'training loop landmarks3d.shape before squeeze: {landmarks3d.shape}')
 		landmarks3d = torch.squeeze(landmarks3d, 2)
-		print('---- after get_Om ----')
-		print(f'training loop landmarks3d.shape after squezze: {landmarks3d.shape}')
-		print(f'training loop landmarks3d_hat.shape: {landmarks3d_hat.shape}')
+		# print('---- after get_Om ----')
+		# print(f'training loop landmarks3d.shape after squezze: {landmarks3d.shape}')
+		# print(f'training loop landmarks3d_hat.shape: {landmarks3d_hat.shape}')
 		l2_vtx = mse_loss(landmarks3d_hat, landmarks3d) # dim(Om) = T × h_v × 3
-		corr_keys = F.cosine_similarity(self.keys.unsqueeze(1), self.keys.unsqueeze(0), dim=-1)
-		corr_values = F.cosine_similarity(self.values.unsqueeze(1), self.values.unsqueeze(0), dim=-1)
-		lmem_reg = 1/(self.M*(self.M - 1))*(torch.sum(corr_keys) + torch.sum(corr_values))
+		print(f'self.implicitmem.keys.shape: {self.implicitmem.keys.shape}')
+		print(f'self.implicitmem.values.shape: {self.implicitmem.values.shape}')
+		# corr_keys = F.cosine_similarity(self.implicitmem.keys.unsqueeze(1), self.implicitmem.keys.unsqueeze(0), dim=-1)
+		# corr_values = F.cosine_similarity(self.implicitmem.values.unsqueeze(1), self.implicitmem.values.unsqueeze(0), dim=-1)
+		corr_keys = sim_matrix(self.implicitmem.keys, self.implicitmem.keys)
+		corr_values = sim_matrix(self.implicitmem.values, self.implicitmem.values)
 
+		# corr_keys = F.cosine_similarity(self.implicitmem.keys.unsqueeze(1), self.implicitmem.keys.unsqueeze(0), dim=2)
+		# corr_values = F.cosine_similarity(self.implicitmem.values.unsqueeze(1), self.implicitmem.values.unsqueeze(0), dim=2)
+		print(f'corr_keys.shape: {corr_keys.shape}')
+		print(f'corr_values.shape: {corr_values.shape}')
+		# corr_keys = pairwise_cosine_similarity(self.implicitmem.keys, self.implicitmem.keys)
+		# corr_values = pairwise_cosine_similarity(self.implicitmem.values, self.implicitmem.values)
+		lmem_reg = 1/(self.M*(self.M - 1))*(torch.sum(corr_keys) + torch.sum(corr_values))
+		# lmem_reg = self.L_reg(self.implicitmem.keys, self.implicitmem.values)
+		# K = self.implicitmem.keys
+		# V = self.implicitmem.values
+		# lmem_reg = (torch.sum(pairwise_cosine_similarity(K)) + torch.sum(pairwise_cosine_similarity(V)))/(self.M * (self.M - 1))# Use the metric
+		# corr_V = torch.sum(pairwise_cosine_similarity(V))  # Use the metric
+		# (corr_K + corr_V)/(self.M * (self.M - 1))  # Average of the two correlations
+		print(f'lmem_reg:{lmem_reg}')
+		# lmem_reg.backward()
+		
 		loss = l2_exp + l2_vtx + 0.1 * lmem_reg
+		self.log("l2_exp", l2_exp)
+		self.log("l2_vtx", l2_vtx)
+		self.log("lmem_reg", lmem_reg)
 		self.log("loss", loss) 
 		
 		return loss
@@ -148,29 +187,36 @@ class Audio2Exp(pl.LightningModule):
 		pose, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_pose, batch_first=True)
 		shape, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_shape, batch_first=True)
 		landmarks3d, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_landmarks3d, batch_first=True)
-		
+		batch_size = 1
 		# audio_embed, exp, pose, shape, landmarks3d = batch.to(device)
-		print(f'val audio_embed.shape before forward pass: {audio_embed.shape}')
 		exp_hat = self(packed_audio_embed)
 		# exp_hat, lengths = torch.nn.utils.rnn.pad_packed_sequence(packed_exp_hat, batch_first=True)
 		landmarks3d = torch.squeeze(landmarks3d, 2)	
 		mse_loss = torch.nn.MSELoss()	
 		l2_exp = mse_loss(exp_hat, exp)
-		print(f'val pose.shape after forward pass and before get_Om: {pose.shape}')
-		landmarks3d_hat = get_Om(pose, shape, exp_hat, self.emoca, batch_size=16)
+		landmarks3d_hat = get_Om(pose, shape, exp_hat, self.emoca, batch_size=batch_size)
 		
 		# landmarks3d_hat = landmarks3d
-		print(f'val landmarks3d_hat.shape after get_Om(): {landmarks3d_hat.shape}')
-		print(f'val landmarks3d.shape after self(exp): {landmarks3d.shape}')
 		l2_vtx = mse_loss(landmarks3d_hat, landmarks3d) # dim(Om) = T × h_v × 3
-		corr_keys = F.cosine_similarity(self.keys.unsqueeze(1), self.keys.unsqueeze(0), dim=-1)
-		corr_values = F.cosine_similarity(self.values.unsqueeze(1), self.values.unsqueeze(0), dim=-1)
+		# corr_keys = F.cosine_similarity(self.keys.unsqueeze(1), self.keys.unsqueeze(0), dim=-1)
+		# corr_values = F.cosine_similarity(self.values.unsqueeze(1), self.values.unsqueeze(0), dim=-1)
+		# lmem_reg = 1/(self.M*(self.M - 1))*(torch.sum(corr_keys) + torch.sum(corr_values))
+		corr_keys = sim_matrix(self.implicitmem.keys, self.implicitmem.keys)
+		corr_values = sim_matrix(self.implicitmem.values, self.implicitmem.values)
+		# corr_keys = F.cosine_similarity(self.implicitmem.keys.unsqueeze(1), self.implicitmem.keys.unsqueeze(0), dim=2)
+		# corr_values = F.cosine_similarity(self.implicitmem.values.unsqueeze(1), self.implicitmem.values.unsqueeze(0), dim=2)
+		print(f'corr_keys.shape: {corr_keys.shape}')
+		print(f'corr_values.shape: {corr_values.shape}')
+		# corr_keys = pairwise_cosine_similarity(self.implicitmem.keys, self.implicitmem.keys)
+		# corr_values = pairwise_cosine_similarity(self.implicitmem.values, self.implicitmem.values)
 		lmem_reg = 1/(self.M*(self.M - 1))*(torch.sum(corr_keys) + torch.sum(corr_values))
-
-		loss = l2_exp + l2_vtx + 0.1 * lmem_reg
-		self.log("val_loss", loss)
-		print(f'TRAINING LOOP LEFTOVERS:{torch.cuda.ipc_collect()}') 
+		# lmem_reg.backward()	
+		print(f'lmem_reg:{lmem_reg}')
+		val_loss = l2_exp + l2_vtx + 0.1 * lmem_reg
+		self.log("val_loss", val_loss)
 		torch.cuda.ipc_collect()
+		
+		return val_loss
 		
 
 	def configure_optimizers(self):
@@ -180,18 +226,20 @@ class Audio2Exp(pl.LightningModule):
 	
 
 class ImplicitMem(nn.Module):
-	def __init__(self, keys, values, d_model=64, d_k=64, d_v=64, dropout=0.1, M=1000):
+	def __init__(self, d_model=64, d_k=64, d_v=64, dropout=0.1, M=1000):
 		super().__init__()
 		
-		self.keys = keys
-		self.values = values
+		self.keys = nn.Parameter(torch.randn(1000, 64), requires_grad = True)
+		self.values = nn.Parameter(torch.randn(1000, 64), requires_grad = True)
+		# self.keys = keys
+		# self.values = values
 		self.d_k = d_k
 		self.d_v = d_v
 		
-		self.w_q = nn.Parameter(torch.randn(64, 64))
-		self.w_k = nn.Parameter(torch.randn(64, 64))
-		self.w_v = nn.Parameter(torch.randn(64, 64))
-		self.w_o = nn.Parameter(torch.randn(1, 64))
+		self.w_q = nn.Parameter(torch.randn(64, 64), requires_grad = True)
+		self.w_k = nn.Parameter(torch.randn(64, 64), requires_grad = True)
+		self.w_v = nn.Parameter(torch.randn(64, 64), requires_grad = True)
+		self.w_o = nn.Parameter(torch.randn(1, 64), requires_grad = True)
 		self.dropout = nn.Dropout(dropout)
 
 	def forward(self, query):
@@ -206,6 +254,8 @@ class ImplicitMem(nn.Module):
 		q_list_unpacked_flat = q_list_unpacked.reshape(-1, 64)	
 		print(f'q_list_unpacked and reshaped into 2d matrix in ImplicitMem: {q_list_unpacked_flat.shape}')
 		q = torch.matmul(q_list_unpacked_flat, self.w_q)
+		# k = self.keys(self.w_k)
+		# v = self.values(self.w_v)
 		k = torch.matmul(self.keys, self.w_k)
 		v = torch.matmul(self.values, self.w_v)
 		# - mask needs to be applied as well for scoresd
@@ -225,7 +275,8 @@ class ImplicitMem(nn.Module):
 		
 		# do we need to unflatten the output of dim (q_len_flat, 64) back into batches?
 		# batch_size = self.batch_size
-		batch_size = 16
+		print(f'q_list_unpacked.shape: {q_list_unpacked.shape}')
+		batch_size = 1
 		print(f'output.shape inside ImplicitMem: {output.shape}')
 		orig_shape_output = output.view(batch_size, max_len, 64)
 		return orig_shape_output
@@ -253,6 +304,7 @@ class Encoder(nn.Module):
 		print(f'x.shape after relu: {x.shape}')
 		x = self.layernorm(x)
 		x = self.dropout(x)
+		print(f'x.shape before packing and pos_encoding: {x.shape}')
 		x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths, batch_first=True)
 		x = self.pos_encoding(x)
 	
@@ -275,6 +327,7 @@ class DynamicPositionalEncoding(nn.Module):
 
 	def forward(self, packed_seq):
 		# Extract the data and lengths from the PackedSequence
+		print(f'packed_seq: {packed_seq}')
 		data, lengths = torch.nn.utils.rnn.pad_packed_sequence(packed_seq, batch_first=True)
 		
 		# Add the positional encoding to the data tensor
@@ -284,6 +337,7 @@ class DynamicPositionalEncoding(nn.Module):
 		print(f'x.shape after encoding, but before encoder packing: {data.shape}')
 		
 		# Pack the data tensor back into a PackedSequence
+
 		packed_seq = torch.nn.utils.rnn.pack_padded_sequence(data, lengths, batch_first=True)
 		return packed_seq
 
@@ -308,6 +362,20 @@ class Decoder(nn.Module):
 		return x
 
 
+def sim_matrix(a, b, eps=1e-8):
+	"""
+	added eps for numerical stability
+	"""
+	a.requires_grad = True
+	b.requires_grad = True
+	
+	a_n, b_n = a.norm(dim=1)[:, None], b.norm(dim=1)[:, None]
+	a_norm = a / torch.max(a_n, eps * torch.ones_like(a_n))
+	b_norm = b / torch.max(b_n, eps * torch.ones_like(b_n))
+	sim_mt = torch.mm(a_norm, b_norm.transpose(0, 1))
+	return sim_mt
+
+
 '''
 # model
 audio2exp = Audio2Enc(Encoder(), ImplicitMem(), Decoder())
@@ -327,13 +395,18 @@ if __name__ == '__main__':
 		datamodule = Audio2ExpDataModule()
 		datamodule.setup()
 		train_dataloader = datamodule.train_dataloader()
-		val_dataloader = datamodule.val_dataloader()
+		# val_dataloader = datamodule.val_dataloader()
 		
 		# callbacks=[EarlyStopping(monitor="val_loss", mode="min")], 
 		# fast_dev_run=True,
 		# EarlyStopping(monitor="val_loss", mode="min", patience=20)
-		trainer = pl.Trainer(strategy = DDPStrategy(find_unused_parameters=True), default_root_dir='checkpoints', callbacks=[checkpoint_callback], logger=wandb_logger, accelerator="gpu", devices=4)
-		trainer.fit(audio2exp, train_dataloader, val_dataloader)
+		for name, param in audio2exp.named_parameters():
+				print(name,	param.requires_grad)
+		plugin = DDPPlugin(find_unused_parameters=True)
+		trainer = pl.Trainer(plugins=plugin, checkpoint_callback=True, default_root_dir='adaptation_checkpoints', logger=wandb_logger, accelerator="gpu", devices=1)
+		# trainer = pl.Trainer(strategy = DDPStrategy(find_unused_parameters=True), default_root_dir='checkpoints', callbacks=[checkpoint_callback], logger=wandb_logger, accelerator="gpu", devices=4)
+		# , val_dataloader
+		trainer.fit(audio2exp, train_dataloader)
 
 
 

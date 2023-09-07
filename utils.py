@@ -23,6 +23,12 @@ from pathlib import Path
 from tqdm import auto
 import cv2
 
+from emoca.gdl_apps.EMOCA.utils.io import decode
+from gdl.utils.lightning_logging import _fix_image
+from skimage.io import imsave
+from emoca.gdl.datasets.ImageTestDataset import TestData
+
+
 def readReconstruction(filepath):
 	f = np.load(filepath, allow_pickle=True)
 	print(f)
@@ -166,7 +172,7 @@ def get_Om(pose, shape, exp, emoca=None, batch_size=64):
 	"""
 	returns 3d coordinates of Flame model, based on pose, shape, exp
 	"""
-	path_to_models = "/root/MemFace/emoca/assets/EMOCA/models"
+	path_to_models = "/home/avocoral/MemFace/emoca/assets/EMOCA/models"
 	model_name = 'EMOCA_v2_lr_mse_20'
 	mode = 'detail'
 	
@@ -274,40 +280,6 @@ def replace_tuple_by_label(array_of_tuples, target_label, new_tuple):
             result.append(tuple_a)
     return result
 
-def find_optimal_lipsbox(landmarks2d_dir='/home/avocoral/MemFace/williamblake10/williamblake10_meta/landmarks'):
-	minX, maxX, minY, maxY = None, None, None, None
-	for frame in os.listdir(landmarks2d_dir):
-		landmarks2d_path = os.path.join(landmarks2d_dir, frame)
-		
-		# load mouth landmarks2d
-		objects = []
-		with (open(landmarks2d_path, "rb")) as openfile:
-			while True:
-				try:
-					objects.append(pickle.load(openfile))
-				except EOFError:
-					break
-		
-		mouth_landmarks = torch.Tensor([[[int(objects[1][i][0]), int(objects[1][i][1])] for i in range(len(objects[1])) if 48 <= i < 69]])
-		print(f'mouth_landmarks: {mouth_landmarks}')
-		
-		# lip region crop + 1pixel boundary around 
-		minX_new = int(mouth_landmarks[:, :, 0].min() - 1)
-		maxX_new = int(mouth_landmarks[:, :, 0].max() + 1)
-		minY_new = int(mouth_landmarks[:, :, 1].min() - 1)
-		maxY_new = int(mouth_landmarks[:, :, 1].max() + 1)
-
-		if minX == None or minX_new < minX:
-			minX = minX_new
-		if maxX == None or maxX_new > maxX:
-			maxX = maxX_new
-		if minY == None or minY_new < minY:
-			minY = minY_new
-		if maxY == None or maxY_new > maxY:
-			maxY = maxY_new
-	
-	return minX, maxX, minY, maxY
-
 
 def construct_explicitmem(data_dir='/home/avocoral/MemFace/williamblake10/williamblake10', metadata_dir='/home/avocoral/MemFace/williamblake10/williamblake10_meta'):
 	
@@ -323,8 +295,6 @@ def construct_explicitmem(data_dir='/home/avocoral/MemFace/williamblake10/willia
 	# Step 0: Build K_all
 	K_all = []
 	for i, frame_name in enumerate(os.listdir(data_dir)):
-		if i == 900:
-			break
 		K_all.append((torch.from_numpy(np.load(os.path.join(data_dir, frame_name, 'landmarks3d.npy')))[:, 48:, :], frame_name))
 
 	# step 1: Initialize K_nr, V_nr
@@ -377,7 +347,7 @@ def construct_explicitmem(data_dir='/home/avocoral/MemFace/williamblake10/willia
 	
 	# return pytorch tensors of tuple tensors [[k_nr, v_nr], ...]
 	# k_nr - landmarks3d, v_nr image 256x256x3
-	image_path = '/home/avocoral/Downloads/Obamaset/Obama_vid/{}/inputs.png'
+	image_path = '/home/avocoral/Downloads/Obamaset/Obama_vid/Obama/{}/inputs.png'
 	K_nr_new = torch.stack([tensor.squeeze().reshape(60, -1) for tensor, image_name in K_nr]) 
 	V_nr_new = torch.stack([load_tensor_image(image_path.format(image_name)) for tensor, image_name in K_nr])
 	
@@ -398,7 +368,48 @@ def load_tensor_image(image_name):
 		tensor_image = tensor_image.permute(2, 0, 1).float().div(255.0)
 	return tensor_image
 
+
+def torch_img_to_np(img):
+    return img.detach().cpu().numpy().transpose(1, 2, 0)
+
+def create_reconstruction_from_vals(vals=None, emoca=None):
+	path_to_models = "/home/avocoral/MemFace/emoca/assets/EMOCA/models"
+	model_name = 'EMOCA_v2_lr_mse_20'
+	mode = 'detail'
+
+	coeff_folderpath = '/home/avocoral/Downloads/Obamaset/Obama_vid/Obama'
+	frame_name = '006294_000'
+	final_out_folder = '/home/avocoral/MemFace/test_folder'
+	final_out_folder = Path(final_out_folder)
+
+	if emoca == None:
+		emoca, conf = load_model(path_to_models, model_name, mode)
+		emoca.cuda()
+		emoca.eval()
+	
+	vals = dict()
+	vals["expcode"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, '006000_000', 'exp.npy'))).unsqueeze(0).to('cuda')
+	vals["shapecode"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'shape.npy'))).unsqueeze(0).to('cuda')
+	vals["posecode"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'pose.npy'))).unsqueeze(0).to('cuda')
+	vals["texcode"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'tex.npy'))).unsqueeze(0).to('cuda')
+	vals["cam"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'cam.npy'))).unsqueeze(0).to('cuda')
+	vals["lightcode"] = torch.from_numpy(np.load('/home/avocoral/Downloads/Obamaset/Obama_vid_with_light/dataset_preprocessed/Obama_vid/000001_000/light.npy')).unsqueeze(0).to('cuda')
+	vals["detailcode"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'detail.npy'))).unsqueeze(0).to('cuda')
+	vals['detailemocode'] = None
+
+	test_frames = ['/home/avocoral/Downloads/Obamaset/Obama_vid/Obama/006294_000/inputs.png']
+	testdata = TestData(test_frames, iscrop=True, face_detector='fan')
+	print(f"testdata[0]['image']: {testdata[0]['image'].shape}")
+	print(f'len(testdata): {len(testdata)}')
+	vals["images"] = testdata[0]['image'].unsqueeze(0).to('cuda')
+
+	vals, visdict = decode(emoca, vals, training=False)
+	imsave(final_out_folder / f"geometry_detail.png", _fix_image(torch_img_to_np(visdict['geometry_detail'][0])))
+
 if __name__ == '__main__':
+
+	create_reconstruction_from_vals()
+
 	# landmark = '/home/avocoral/MemFace/emoca/output/processed_2023_Jan_02_17-22-45/testvid/landmarks/000042_000.pkl'
 	# exp_filepath = '/mnt/sda/AVSpeech/video/GWwK4ak096M_9/000001_000/exp.npy'
 	# pose_filepath = '/mnt/sda/AVSpeech/video/GWwK4ak096M_9/000001_000/pose.npy'
@@ -437,8 +448,8 @@ if __name__ == '__main__':
 	# 		print(f'! video #{i} preprocessed !')
 	# 		filepath = os.path.join(dataset_dir, video_name)
 	# 
-	filepath = '/home/avocoral/Downloads/Obamaset/Obama_vid.mp4'
-	neural_rendering_facereconstruction(filepath)
+	# filepath = '/home/avocoral/Downloads/Obamaset/Obama_vid.mp4'
+	# neural_rendering_facereconstruction(filepath)
 
 	# K_nr, V_nr = construct_explicitmem()
 	# print(f'K_nr.shape: {K_nr.shape}')
