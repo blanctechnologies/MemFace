@@ -9,9 +9,13 @@ I used about 7 hours of AVSpeech dataset for Audio2Expression.
 
 ## TODO:
 [ ] Pruning of Audio2Exp
+
 [ ] Quantization of Audio2Exp
+
 [ ] Pruning of Neural Rendering
+
 [ ] Quantization of Neural Rendering
+
 [ ] Multi-face LipSync in the same scene with Face Recognition
 
 ## Citations
