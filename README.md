@@ -7,6 +7,17 @@ Implementation of <a href="https://arxiv.org/abs/2212.05005v2">MemFace</a> in Py
 ## Dataset
 I used about 7 hours of AVSpeech dataset for Audio2Expression.
 
+## TODO:
+[ ] Pruning of Audio2Exp
+
+[ ] Quantization of Audio2Exp
+
+[ ] Pruning of Neural Rendering
+
+[ ] Quantization of Neural Rendering
+
+[ ] Multi-face LipSync in the same scene with Face Recognition
+
 ## Citations
 ```bibtex
 @article{tang2022memories,
@@ -16,3 +27,4 @@ I used about 7 hours of AVSpeech dataset for Audio2Expression.
   year={2022}
 }
 ```
+
