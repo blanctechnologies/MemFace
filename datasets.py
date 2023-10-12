@@ -15,38 +15,45 @@ class NeuralRenderingDataset(Dataset):
 		def __init__(self, data_dir='/home/avocoral/Downloads/Obamaset/Obama_vid/Obama', metadata_dir='/home/avocoral/Downloads/Obamaset/Obama_meta'):
 				self.data_dir = data_dir
 				self.metadata_dir = metadata_dir
+				self.resolution = 450
 
 		def __len__(self):
 				# -25 frames, cause we don't take any of the last 25 frames as first frame of seq
-				return len(os.listdir(self.data_dir)) - 31
+				return len(os.listdir(self.data_dir)) - 26
 
 		def __getitem__(self, idx):
 				# one elem is 25 continious frames of ref video + masked original
 				
-				frames_dir = [str(idx+i).zfill(6)+'_000' for i in range(1, 31)]
-				print(f'idx: {idx}')
-				print(f'print dataset len: {self.__len__()}')
-				print(f'frames_dir: {frames_dir}')
+				frames_dir = [str(idx+i).zfill(6)+'_000' for i in range(1, 26)]
+				# print(f'idx: {idx}')
+				# print(f'print dataset len: {self.__len__()}')
+				# print(f'frames_dir: {frames_dir}')
 				orig_images = []
 				landmarks3d_final = []
 				masked_ref_images = []
+				print(f'len(frames_dir): {len(frames_dir)}')
 				for i, frame_dir in enumerate(frames_dir):
 
-					img_path = os.path.join(self.data_dir, frame_dir, 'inputs.png')
+					img_path = os.path.join(self.metadata_dir, 'cropped_frames', f'{frame_dir[:-4]}.png')
+					# print(f'img_path:{img_path}')
 					mask_path = os.path.join(self.data_dir, frame_dir, 'mask.png')
-					ref_path = os.path.join(self.data_dir, frame_dir, 'geometry_detail.png')
+					ref_path = os.path.join('/home/avocoral/MemFace/test_folder', f'geometry_detail_{frame_dir}.png')
+					# print(f'ref_path: {ref_path}')
 					landmarks3d_path = os.path.join(self.data_dir, frame_dir, 'landmarks3d.npy')
 					# Check if the files exists
 					if not os.path.exists(landmarks3d_path):
 									raise FileNotFoundError(f"Some files are missing for frame {frame_dir}")
-					landmarks2d_path = os.path.join(self.metadata_dir, 'landmarks', frame_dir+'.pkl')
+					landmarks2d_path = os.path.join(self.metadata_dir, f'new_landmarks/{frame_dir}.pkl')
 					# load landmarks3d
 					landmarks3d = torch.from_numpy(np.load(landmarks3d_path))[:, 48:, :]
 					
 					# masking face
-					original_image = cv2.imread(img_path)
-					ref_image = cv2.imread(ref_path)
-					mask_image = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+					original_image = cv2.imread(img_path)[:450, :450, :]
+					# print(f'original_image.shape: {original_image.shape}')
+					ref_image = cv2.imread(ref_path)[:450, :450, :]
+					# print(f'ref_image.shape: {ref_image.shape}')
+					mask_image = cv2.resize(cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE), (self.resolution, self.resolution), interpolation=cv2.INTER_LINEAR)
+					# print(f'mask_image.shape: {mask_image.shape}')
 
 					# Convert the mask image to binary
 					_, binary_mask = cv2.threshold(mask_image, thresh=1, maxval=255, type=cv2.THRESH_BINARY)
@@ -66,7 +73,7 @@ class NeuralRenderingDataset(Dataset):
 							except EOFError:
 								break
 					
-					mouth_landmarks = torch.Tensor([[[int(objects[1][i][0]), int(objects[1][i][1])] for i in range(len(objects[1])) if 48 <= i < 69]])
+					mouth_landmarks = torch.Tensor([[[-int(objects[0][i][0]), -int(objects[0][i][1])] for i in range(len(objects[0])) if 48 <= i < 69]])
 					
 					# lip region crop + 1pixel boundary around 
 					minX = int(mouth_landmarks[:, :, 0].min() - 1)
@@ -101,7 +108,7 @@ class NeuralRenderingDataset(Dataset):
 				orig_images = torch.stack(orig_images)
 				landmarks3d = torch.stack(landmarks3d_final)
 				masked_ref_images = torch.stack(masked_ref_images)
-				
+				print(f'masked_ref_images.shape, orig_images.shape, landmarks3d.shape = {masked_ref_images.shape}, {orig_images.shape}, {landmarks3d.shape}')	
 				
 				# return (masked_img, ref_image), original_image, landmarks3d 
 				return masked_ref_images, orig_images, landmarks3d

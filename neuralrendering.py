@@ -6,7 +6,6 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 import torch.utils.model_zoo as model_zoo
 import torchvision.models as models
-import utils
 from utils import construct_explicitmem
 from datasets import NeuralRenderingDataModule
 import torchvision
@@ -18,36 +17,44 @@ from PIL import Image
 import os
 import cv2
 import torchvision.transforms.functional as TF
-
+import math
 
 class NeuralRender(pl.LightningModule):
-	def __init__(self):
+	def __init__(self, resolution=450):
 		super(NeuralRender, self).__init__()
 		self.N = 300
 
 		self.ImageEncoder = ImageEncoder()
-		self.ExplicitMem = ExplicitMem()
+		self.ExplicitMem = ExplicitMem(resolution=resolution)
 		self.ConvLSTM = ConvLSTM(input_dim=384, hidden_dim=384, kernel_size=(3, 3), num_layers=1, batch_first=True, bias=False, return_all_layers=False)
 		self.ImageDecoder = ImageDecoder()
 		self.discriminator = Discriminator()
+		self.resolution = resolution
+		self.hidden_dim = (resolution // 32)
 	
 	def forward(self, masked_ref_images, landmarks3d):
 		batch_size = masked_ref_images.shape[0]
-		masked_ref_images = masked_ref_images.view(30*masked_ref_images.shape[0], 6, 224, 224)
-		landmarks3d = landmarks3d.view(30*landmarks3d.shape[0], 20, 3)
+		print(f'masked_ref_images.shape: {masked_ref_images.shape}')
+		print(f'landmarks3d.shape: {landmarks3d.shape}')
+		masked_ref_images = masked_ref_images.view(25*masked_ref_images.shape[0], 6, self.resolution, self.resolution)
+		landmarks3d = landmarks3d.view(25*landmarks3d.shape[0], 20, 3)
 		encoded_images, skip_connections = self.ImageEncoder(masked_ref_images.float())
 		memory_images = self.ExplicitMem(landmarks3d.float())
 		# memory_images: (60, 384, 4, 7) - > (60, 384, 7, 7) - shape of encoded_images
-		print(f'memory_images.shape right after ExplicitMem: {memory_images.shape}')
-		reshaped_memory_images = memory_images.reshape(30*batch_size, 384, 3, 7)
-		interpolated_memory_images = F.interpolate(reshaped_memory_images, size=(7, 7), mode='bilinear', align_corners=False)
+		reshaped_memory_images = memory_images.reshape(25*batch_size, 384, self.hidden_dim // 2, self.hidden_dim)
+		interpolated_memory_images = F.interpolate(reshaped_memory_images, size=(encoded_images.shape[3], encoded_images.shape[3]), mode='bilinear', align_corners=False)
+		print(f'encoded_images.shape:{encoded_images.shape}')
+		print(f'interpolated_memory_images.shape: {interpolated_memory_images.shape}')
 		final_encoded_images = encoded_images + interpolated_memory_images
-		final_encoded_images = final_encoded_images.reshape(batch_size, 30, 384, 7, 7)
+		final_encoded_images = final_encoded_images.reshape(batch_size, 25, 384, encoded_images.shape[3], encoded_images.shape[3])
 		# here we should reshape (bs*T, ...) -> (bs, T, ...)
 		lstm_output, state = self.ConvLSTM(final_encoded_images)
 		convlstm_result = torch.cat(lstm_output, dim=0)
 		# and here we should reshape (bs, T, ...) -> (bs*T, ...)
-		convlstm_result = convlstm_result.reshape(batch_size*30, 384, 7, 7)
+		convlstm_result = convlstm_result.reshape(batch_size*25, 384, encoded_images.shape[3], encoded_images.shape[3])
+		print(f'x.shape before ImageDecoder: {convlstm_result.shape}')
+		print(f'skip_connections.shape(4321) before ImageDecoder: {skip_connections["skip4"].shape}, {skip_connections["skip3"].shape}, {skip_connections["skip2"].shape}, {skip_connections["skip1"].shape}')
+
 		output_images_hat = self.ImageDecoder(convlstm_result, skip_connections)
 		return output_images_hat * 255
 	
@@ -55,8 +62,8 @@ class NeuralRender(pl.LightningModule):
 		masked_ref_images, output_images, landmarks3d = batch
 		# reshape
 		# masked_ref_images = masked_ref_images.view(30*masked_ref_images.shape[0], 6, 224, 224)
-		ref_images = masked_ref_images[:, :, 3:, :, :].view(30*masked_ref_images.shape[0], 3, 224, 224)
-		output_images = output_images.view(30*output_images.shape[0], 3, 224, 224)
+		ref_images = masked_ref_images[:, :, 3:, :, :].view(25*masked_ref_images.shape[0], 3, self.resolution, self.resolution)
+		output_images = output_images.view(25*output_images.shape[0], 3, self.resolution, self.resolution)
 		# landmarks3d = landmarks3d.squeeze().view(30*landmarks3d.shape[0], 20, 3)
 
 		output_images_hat = self(masked_ref_images, landmarks3d)
@@ -94,8 +101,10 @@ class NeuralRender(pl.LightningModule):
 		masked_ref_images, output_images, landmarks3d = batch
 		# reshape
 		# masked_ref_images = masked_ref_images.view(60, 6, 224, 224)
-		ref_images = masked_ref_images[:, :, 3:, :, :].view(30*masked_ref_images.shape[0], 3, 224, 224)
-		output_images = output_images.view(30*output_images.shape[0], 3, 224, 224)
+		print(f'masked_ref_images.shape: {masked_ref_images.shape}')
+		print(f'landmarks3d.shape: {landmarks3d.shape}')
+		ref_images = masked_ref_images[:, :, 3:, :, :].view(25*masked_ref_images.shape[0], 3, self.resolution, self.resolution)
+		output_images = output_images.view(25*output_images.shape[0], 3, self.resolution, self.resolution)
 		# landmarks3d = landmarks3d.squeeze().view(60, 20, 3)
 		output_images_hat = self(masked_ref_images, landmarks3d)
 		device = 'cuda'	
@@ -153,6 +162,7 @@ class ImageEncoder(nn.Module):
 	def forward(self, x):
 		out1 = self.conv1(x)
 		out2 = self.conv2(out1)
+		print(f'before conv3, skip3.shape: {out2.shape}')
 		out3 = self.conv3(out2)
 		out4 = self.conv4(out3)
 		x = self.conv5(out4)
@@ -166,18 +176,58 @@ class ImageEncoder(nn.Module):
 
 		return x, skip_connections
 
+class ImageDecoder(nn.Module):
+	def __init__(self):
+		super(ImageDecoder, self).__init__()
+
+		self.dconv1 = ConvTranspose2dBlock(384, 384, kernel_size=4, stride=2, padding=1, bias=False)
+		self.dconv2 = ConvTranspose2dBlock(768, 192, kernel_size=4, stride=2, padding=1, bias=False)
+		self.dconv3 = ConvTranspose2dBlock(384, 96, kernel_size=4, stride=2, padding=1, bias=False)
+		self.dconv4 = ConvTranspose2dBlock(192, 48, kernel_size=4, stride=2, padding=1, bias=False, output_padding=1)
+		self.dconv5 = ConvTranspose2dBlock(96, 48, kernel_size=4, stride=2, padding=1, bias=False)
+		self.dconv6 = nn.Sequential(
+				nn.Conv2d(48, 3, kernel_size=5, stride=1, padding=2),
+				nn.Tanh()
+		)
+
+	def forward(self, x, skip_connections):
+		print(f'x.shape input to the ImageDecoder:{x.shape}')
+		x = self.dconv1(x)
+		print(f'x.shape after dconv1 in ImageDecoder: {x.shape}')
+		x = self.dconv2(torch.cat([x, skip_connections['skip1']], dim=1))
+		print(f'x.shape after dconv2 in ImageDecoder: {x.shape}')
+		x = self.dconv3(torch.cat([x, skip_connections['skip2']], dim=1))
+		print(f'x.shape after dconv3 in ImageDecoder: {x.shape}')
+		x = self.dconv4(torch.cat([x, skip_connections['skip3']], dim=1))
+		x = self.dconv5(torch.cat([x, skip_connections['skip4']], dim=1))
+		x = self.dconv6(x)
+		return x
+
+
+class ConvTranspose2dBlock(nn.Module):
+	def __init__(self, in_channels, out_channels, kernel_size, stride, padding, bias, output_padding=0):
+		super(ConvTranspose2dBlock, self).__init__()
+		self.layers = nn.Sequential(
+				nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding, bias=bias, output_padding=output_padding),
+				nn.InstanceNorm2d(out_channels, eps=1e-5, momentum=0.1, affine=True, track_running_stats=False),
+				nn.ReLU(inplace=True)
+		)
+
+	def forward(self, x):
+		return self.layers(x)
 
 class ExplicitMem(nn.Module):
-	def __init__(self, dropout=0.1):
+	def __init__(self, dropout=0.1, resolution=450):
 		super().__init__()
-		
+		self.resolution = resolution
 		self.LipsEncoder = LipEncoder()
 		
 		# depending on training video, we would need to use different ExplicitMem
-		self.K_nr, self.V_nr = construct_explicitmem(data_dir='/home/avocoral/Downloads/Obamaset/Obama_vid/Obama', metadata_dir='/home/avocoral/Downloads/Obamaset/Obama_meta')
+		self.K_nr, self.V_nr = construct_explicitmem()
 		
 		self.K_nr = self.K_nr.to('cuda').view(300, 60)
-		self.V_nr = self.V_nr.to('cuda').view(300, 75264)
+		# self.V_nr = self.V_nr.to('cuda').view(300, 75264)
+		self.V_nr = self.V_nr.to('cuda').view(300, -1)
 
 		self.w_q = nn.Linear(in_features=60, out_features=60, bias=True)
 		self.w_k = nn.Linear(in_features=60, out_features=60, bias=True)
@@ -197,7 +247,7 @@ class ExplicitMem(nn.Module):
 		
 		scores = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.d_k, dtype=torch.float))
 		attention_weights = torch.softmax(scores, dim=-1).reshape(query_flat.shape[0], 300)
-		attention = torch.matmul(attention_weights, self.V_nr).view(query_flat.shape[0], 3, 112, 224)
+		attention = torch.matmul(attention_weights, self.V_nr).view(query_flat.shape[0], 3, self.resolution // 2, self.resolution)
 		attention = self.LipsEncoder(attention)
 		output = self.dropout(attention)
 			
@@ -238,41 +288,6 @@ class LipEncoder(nn.Module):
 		return x
 
 
-class ImageDecoder(nn.Module):
-	def __init__(self):
-		super(ImageDecoder, self).__init__()
-
-		self.dconv1 = ConvTranspose2dBlock(384, 384, kernel_size=4, stride=2, padding=1, bias=False)
-		self.dconv2 = ConvTranspose2dBlock(768, 192, kernel_size=4, stride=2, padding=1, bias=False)
-		self.dconv3 = ConvTranspose2dBlock(384, 96, kernel_size=4, stride=2, padding=1, bias=False)
-		self.dconv4 = ConvTranspose2dBlock(192, 48, kernel_size=4, stride=2, padding=1, bias=False)
-		self.dconv5 = ConvTranspose2dBlock(96, 48, kernel_size=4, stride=2, padding=1, bias=False)
-		self.dconv6 = nn.Sequential(
-				nn.Conv2d(48, 3, kernel_size=5, stride=1, padding=2),
-				nn.Tanh()
-		)
-
-	def forward(self, x, skip_connections):
-		x = self.dconv1(x)
-		x = self.dconv2(torch.cat([x, skip_connections['skip1']], dim=1))
-		x = self.dconv3(torch.cat([x, skip_connections['skip2']], dim=1))
-		x = self.dconv4(torch.cat([x, skip_connections['skip3']], dim=1))
-		x = self.dconv5(torch.cat([x, skip_connections['skip4']], dim=1))
-		x = self.dconv6(x)
-		return x
-
-
-class ConvTranspose2dBlock(nn.Module):
-	def __init__(self, in_channels, out_channels, kernel_size, stride, padding, bias):
-		super(ConvTranspose2dBlock, self).__init__()
-		self.layers = nn.Sequential(
-				nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding, bias=bias),
-				nn.InstanceNorm2d(out_channels, eps=1e-5, momentum=0.1, affine=True, track_running_stats=False),
-				nn.ReLU(inplace=True)
-		)
-
-	def forward(self, x):
-		return self.layers(x)
 
 
 class Discriminator(nn.Module):
@@ -341,8 +356,8 @@ class VGGPerceptualLoss(torch.nn.Module):
 				input = (input-self.mean) / self.std
 				target = (target-self.mean) / self.std
 				if self.resize:
-						input = self.transform(input, mode='bilinear', size=(224, 224), align_corners=False)
-						target = self.transform(target, mode='bilinear', size=(224, 224), align_corners=False)
+						input = self.transform(input, mode='bilinear', size=(451, 451), align_corners=False)
+						target = self.transform(target, mode='bilinear', size=(451, 451), align_corners=False)
 				loss = 0.0
 				x = input
 				y = target
@@ -361,6 +376,7 @@ class VGGPerceptualLoss(torch.nn.Module):
 
 
 if __name__ == '__main__':
+	torch.cuda.empty_cache()
 	vgg = VGGPerceptualLoss().to("cuda:0")
 	transform = transforms.ToPILImage()
 	mse_loss = torch.nn.MSELoss()
@@ -374,7 +390,7 @@ if __name__ == '__main__':
 	torch.cuda.empty_cache()
 	NRmodel = NeuralRender()
 	
-	datamodule = NeuralRenderingDataModule()
+	datamodule = NeuralRenderingDataModule(batch_size=1)
 	datamodule.setup(stage = 'fit')
 	train_dataloader = datamodule.train_dataloader()
 	val_dataloader = datamodule.val_dataloader()

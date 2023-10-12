@@ -25,9 +25,10 @@ import cv2
 
 from emoca.gdl_apps.EMOCA.utils.io import decode
 from gdl.utils.lightning_logging import _fix_image
-from skimage.io import imsave
+from skimage.io import imsave, imread
 from emoca.gdl.datasets.ImageTestDataset import TestData
-
+from emoca.gdl.datasets.ImageDatasetHelpers import point2bbox, bbpoint_warp
+import math
 
 def readReconstruction(filepath):
 	f = np.load(filepath, allow_pickle=True)
@@ -46,6 +47,9 @@ def readLandmarks(landmark_filepath, only_mouth = False, visualize = False):
 				objects.append(pickle.load(openfile))
 			except EOFError:
 				break
+
+	# print(f'len = {len(objects[0])}')
+	# mouth_landmarks = torch.Tensor([[[-int(objects[0][i][0]), -int(objects[0][i][1])] for i in range(len(objects[0])) if 48 <= i < 69]])
 	if only_mouth == True:
 		# mouth_landmarks = objects[1][48:69]
 		mouth_landmarks = torch.Tensor([[[int(objects[1][i][0]), int(objects[1][i][1])] for i in range(len(objects[1])) if 48 <= i < 69]])
@@ -85,7 +89,8 @@ def readLandmarks(landmark_filepath, only_mouth = False, visualize = False):
 		# save_image(final_image, vis_name)
 		final_image.save(vis_name, quality=95)
 		print(f'visualization filename: {vis_name}')
-
+	return objects
+	# return mouth_landmarks
 
 def readCoeff(shape_filepath, exp_filepath, pose_filepath, cam_filepath):
 	print('+----------- Exp ------------+')
@@ -201,7 +206,8 @@ def get_Om(pose, shape, exp, emoca=None, batch_size=64):
 		codedict['expcode'] = exp
 		codedict['posecode'] = pose
 		verts, landmarks2d, landmarks3d_hat, _ = emoca.deca.flame(shape_params=shape, expression_params=exp, pose_params=pose)
-	# 	print(f'landmarks3d: {landmarks3d}')
+		print(f'landmarks3d_hat.shape: {landmarks3d_hat.shape}')
+		landmarks3d_hat = landmarks3d_hat[:,48:,:]
 	
 	return landmarks3d_hat
 
@@ -252,116 +258,100 @@ def neural_rendering_facereconstruction(filepath):
 
 
 def find_most_similar_tensors(K_nr):
-	# Create an empty array to store RMS distances between tensors
-	print('inside find_most_similar_tensors')
-	n = len(K_nr)
-	print(f'len(K_nr): {n}')
-	print(f'first elem of K_nr: {K_nr[0]}')
-	rms_distances = np.full((n, n), np.inf)	
-	# Calculate RMS distances between all pairs of tensors
-	for i, (tensor1, _) in enumerate(K_nr):
-		for j, (tensor2, _) in enumerate(K_nr):
-			if i != j:
-				rms_distances[i, j] = torch.sqrt(torch.mean(torch.square(tensor1 - tensor2)))
-	
-	# Find the indices of the two tuples with the smallest RMS distance
-	min_indices = np.unravel_index(np.argmin(rms_distances), rms_distances.shape)
-	
-	# Return the two tuples with the smallest RMS distance and the RMS distance itself
-	return K_nr[min_indices[0]], K_nr[min_indices[1]], rms_distances[min_indices]
+	K_nr_landmarks = K_nr[:, :20]
+	num_tensors = K_nr_landmarks.size(0)
+	K_nr_reshaped = K_nr_landmarks.view(num_tensors, -1)
+	pairwise_distances = torch.cdist(K_nr_reshaped, K_nr_reshaped, p=2).pow(2)
+	# torch.fill_diagonal_(pairwise_distances, float('inf'))
+	pairwise_distances[range(pairwise_distances.size(0)), range(pairwise_distances.size(1))] = float('inf')
+	min_indices = torch.argmin(pairwise_distances)
+	row_idx = min_indices // num_tensors
+	col_idx = min_indices % num_tensors
+	rms_distance = torch.sqrt(pairwise_distances[row_idx, col_idx])
+	# return K_nr[row_idx], K_nr[col_idx], rms_distance
+	return row_idx, col_idx, rms_distance
+
+def copy_Knr_and_replace(K_nr, k_idx, k_tmp):
+	K_nr_clone = K_nr.clone()
+	K_nr_clone[k_idx] = k_tmp
+	return 
 
 
-def replace_tuple_by_label(array_of_tuples, target_label, new_tuple):
-    result = []
-    for tuple_a in array_of_tuples:
-        if tuple_a[1] == target_label:
-            result.append(new_tuple)
-        else:
-            result.append(tuple_a)
-    return result
-
-
-def construct_explicitmem(data_dir='/home/avocoral/MemFace/williamblake10/williamblake10', metadata_dir='/home/avocoral/MemFace/williamblake10/williamblake10_meta'):
-	
+def construct_explicitmem():
+	N = 300
 	K_nr_filepath = '/home/avocoral/Downloads/Obamaset/K_nr.pt'
 	V_nr_filepath = '/home/avocoral/Downloads/Obamaset/V_nr.pt'
-	N = 300
 
 	if os.path.exists(K_nr_filepath) and os.path.exists(V_nr_filepath):
 		K_nr = torch.load(K_nr_filepath)
 		V_nr = torch.load(V_nr_filepath)
 		return K_nr, V_nr
 	
-	# Step 0: Build K_all
-	K_all = []
-	for i, frame_name in enumerate(os.listdir(data_dir)):
-		K_all.append((torch.from_numpy(np.load(os.path.join(data_dir, frame_name, 'landmarks3d.npy')))[:, 48:, :], frame_name))
+	# Step 0: Build K_all, and V_all will be just the last 6 numbers in each tensor of K_all
+	frame_names = os.listdir(data_dir)
+	frame_names.sort()
+	frame_num = len(frame_names)
+	K_all = torch.zeros((frame_num, 66))
+	print(f'first 30 images: {frame_names[:30]}')
+	for i, frame in enumerate(frame_names):
+		label = torch.tensor([int(digit) for digit in frame[:6]])
+		landmarks3d_path = os.path.join(data_dir, frame, 'landmarks3d.npy')
+		landmarks3d = torch.from_numpy(np.load(landmarks3d_path))[:, 48:, :].squeeze(0).reshape(60)
+		print(f'landmarks3d.shape: {landmarks3d.shape}')
+		print(f'landmarks3d: {landmarks3d}')
+		K_all[i] = torch.cat((landmarks3d, label), dim=0)
 
 	# step 1: Initialize K_nr, V_nr
-	K_nr = random.sample(K_all, N)
-
+	permutation_indices = torch.randperm(frame_num)
+	K_nr = K_all[permutation_indices[:N]]
 	# step 2: Find two most similar mouth shapes:
-	k_m1, k_m2, Dmin = find_most_similar_tensors(K_nr)
-	print(f'k_m1: {k_m1}')
-	print(f'k_m2: {k_m2}')
+	k_m1_idx, k_m2_idx, Dmin = find_most_similar_tensors(K_nr)
+	print(f'k_m1_idx: {k_m1_idx}')
+	print(f'k_m2_idx: {k_m2_idx}')
 	print(f'Dmin: {Dmin}')
-	
 	# step 3: go through all tensors in K_all
 	i = 0
-	for k_tmp in K_all:
+	for i, k_tmp in enumerate(K_all):
 		print(f"Preprocessed {i}/{len(K_all)}")
 		# create a copy of K_nr where k_m1 replaced with k_tmp
-		K_tmp1 = replace_tuple_by_label(K_nr, k_m1[1], k_tmp)	
+		K_tmp1 = K_nr.clone()
+		K_tmp1[k_m1_idx] = k_tmp
 		# find two most similar tensors in K_nr and their distance Dmin1
 		# print(f'K_tmp1[0]: {K_tmp1[0]}')
 		_ , _ , Dmin1 = find_most_similar_tensors(K_tmp1)
-		# create a copy of K_nr where k_m1 replaced with k_tmp
-		K_tmp2 = replace_tuple_by_label(K_nr, k_m2[1], k_tmp)	
+		# create a copy of K_nr where k_m2 replaced with k_tmp
+		K_tmp2 = K_nr.clone()
+		K_tmp2[k_m2_idx] = k_tmp
 		# find two most similar tensors in K_nr and their distance Dmin1
 		_ , _ , Dmin2 = find_most_similar_tensors(K_tmp2)
 
 		if max(Dmin1, Dmin2) > Dmin:
 			if Dmin1 > Dmin2:
-				K_nr = replace_tuple_by_label(K_nr, k_m1[1], k_tmp)
+				K_nr[k_m1_idx] = k_tmp
 			else:
-				K_nr = replace_tuple_by_label(K_nr, k_m2[1], k_tmp)
-		k_m1, k_m2, Dmin = find_most_similar_tensors(K_nr)
-		i += 1
-	resulting_labels = [elem[1] for elem in K_nr]
-	print(resulting_labels)
-	
-	# find the lipsbox
-	# minX, maxX, minY, maxY = find_optimal_lipsbox()
-	
-	# extract V_nr
-	# lips_dir = '/home/avocoral/MemFace/williamblake10/williamblake10_ExplicitMemLips'
-	# print(f'minX, maxX, minY, maxY = {minX}, {maxX}, {minY}, {maxY}')
-	# print(f'len(K_nr)')
-	# for (_, frame) in K_nr:
-	# 	print(f'frame: {frame}')
-	# 	img_path = os.path.join(data_dir, frame, 'inputs.png')
-	# 	original_image = cv2.imread(img_path)
-	# 	crop_lips = original_image[minY:maxY, minX:maxX]
-	# 	cv2.imwrite(f'{lips_dir}/{frame}_lips.png', crop_lips)	
+				K_nr[k_m2_idx] = k_tmp
+		k_m1_idx, k_m2_idx, Dmin = find_most_similar_tensors(K_nr)
 
-	
-	# return pytorch tensors of tuple tensors [[k_nr, v_nr], ...]
-	# k_nr - landmarks3d, v_nr image 256x256x3
-	image_path = '/home/avocoral/Downloads/Obamaset/Obama_vid/Obama/{}/inputs.png'
-	K_nr_new = torch.stack([tensor.squeeze().reshape(60, -1) for tensor, image_name in K_nr]) 
-	V_nr_new = torch.stack([load_tensor_image(image_path.format(image_name)) for tensor, image_name in K_nr])
-	
+	V_nr_new_names = [f'{"".join(map(str, map(int, elem[-6:].tolist())))}.png' for elem in K_nr]
+	image_path = '/home/avocoral/Downloads/Obamaset/Obama_meta/cropped_frames/{}'
+	V_nr_new = torch.stack([load_tensor_image(image_path.format(image_name)) for image_name in V_nr_new_names])
+	K_nr_new = K_nr[:, :60]
+	print(f'K_nr_new.shape: {K_nr_new.shape}')
+	print(f'V_nr_new.shape: {V_nr_new.shape}')
+
 	# save K_nr_new and V_nr_new
 	torch.save(K_nr_new, K_nr_filepath)
 	torch.save(V_nr_new, V_nr_filepath)
-	
+
 	return K_nr_new, V_nr_new
 
-
+		
 def load_tensor_image(image_name):
 	with Image.open(image_name) as image:
 		# only load the lower part of the image with lips
-		image = image.crop((0, image.size[1]//2, image.size[0], image.size[1]))
+		print(f'image.size[1]: {image.size[1]}')
+		print(f'image.size[1]//2: {image.size[1]//2}')
+		image = image.crop((0, image.size[1]//2, image.size[0]-1, image.size[1]-1))
 		image = image.convert("RGB")
 		tensor_image = torch.ByteTensor(torch.ByteStorage.from_buffer(image.tobytes()))
 		tensor_image = tensor_image.view(image.size[1], image.size[0], -1)
@@ -372,45 +362,127 @@ def load_tensor_image(image_name):
 def torch_img_to_np(img):
     return img.detach().cpu().numpy().transpose(1, 2, 0)
 
-def create_reconstruction_from_vals(vals=None, emoca=None):
+def create_reconstruction_from_vals(vals=None, emoca=None, resolution=451):
 	path_to_models = "/home/avocoral/MemFace/emoca/assets/EMOCA/models"
 	model_name = 'EMOCA_v2_lr_mse_20'
 	mode = 'detail'
 
 	coeff_folderpath = '/home/avocoral/Downloads/Obamaset/Obama_vid/Obama'
-	frame_name = '006294_000'
+
 	final_out_folder = '/home/avocoral/MemFace/test_folder'
 	final_out_folder = Path(final_out_folder)
+	
+	# write custom resolution to the config file
+	if resolution != None:
+		with open('/home/avocoral/MemFace/emoca/assets/EMOCA/models/EMOCA_v2_lr_mse_20/cfg.yaml', 'r') as file:
+			lines = file.readlines()
+
+		new_line = f"    image_size: {resolution}"
+		lines[285] = new_line + '\n'
+		with open('/home/avocoral/MemFace/emoca/assets/EMOCA/models/EMOCA_v2_lr_mse_20/cfg.yaml', 'w') as file:
+			file.writelines(lines)
 
 	if emoca == None:
 		emoca, conf = load_model(path_to_models, model_name, mode)
 		emoca.cuda()
 		emoca.eval()
 	
-	vals = dict()
-	vals["expcode"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, '006000_000', 'exp.npy'))).unsqueeze(0).to('cuda')
-	vals["shapecode"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'shape.npy'))).unsqueeze(0).to('cuda')
-	vals["posecode"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'pose.npy'))).unsqueeze(0).to('cuda')
-	vals["texcode"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'tex.npy'))).unsqueeze(0).to('cuda')
-	vals["cam"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'cam.npy'))).unsqueeze(0).to('cuda')
-	vals["lightcode"] = torch.from_numpy(np.load('/home/avocoral/Downloads/Obamaset/Obama_vid_with_light/dataset_preprocessed/Obama_vid/000001_000/light.npy')).unsqueeze(0).to('cuda')
-	vals["detailcode"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'detail.npy'))).unsqueeze(0).to('cuda')
-	vals['detailemocode'] = None
+	frame_names = os.listdir(coeff_folderpath)
+	frame_names.sort()
+	num_frames = len(frame_names)
+	for i, frame_name in enumerate(frame_names):
+		print(f'---------- #{i}/{num_frames} -----------')
+		vals = dict()
+		vals["posecode"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'pose.npy'))).unsqueeze(0).to('cuda')
+		vals["shapecode"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'shape.npy'))).unsqueeze(0).to('cuda')
+		vals["texcode"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'tex.npy'))).unsqueeze(0).to('cuda')
+		vals["cam"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'cam.npy'))).unsqueeze(0).to('cuda')
+		vals["detailcode"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'detail.npy'))).unsqueeze(0).to('cuda')
+		vals["expcode"] = torch.from_numpy(np.load(os.path.join(coeff_folderpath, frame_name, 'exp.npy'))).unsqueeze(0).to('cuda')
+		vals["lightcode"] = torch.from_numpy(np.load('/home/avocoral/Downloads/Obamaset/Obama_vid_with_light/dataset_preprocessed/Obama_vid/000001_000/light.npy')).unsqueeze(0).to('cuda')
+		vals['detailemocode'] = None
+		vals["images"] = torch.randn((3, resolution, resolution)).unsqueeze(0).to('cuda')
+		
+		print(f'vals["expcode"].shape: {vals["expcode"].shape}')
+		print(f'vals["posecode"].shape: {vals["posecode"].shape}')
+		print(f'vals["shapecode"].shape: {vals["shapecode"].shape}')
 
-	test_frames = ['/home/avocoral/Downloads/Obamaset/Obama_vid/Obama/006294_000/inputs.png']
-	testdata = TestData(test_frames, iscrop=True, face_detector='fan')
-	print(f"testdata[0]['image']: {testdata[0]['image'].shape}")
-	print(f'len(testdata): {len(testdata)}')
-	vals["images"] = testdata[0]['image'].unsqueeze(0).to('cuda')
 
-	vals, visdict = decode(emoca, vals, training=False)
-	imsave(final_out_folder / f"geometry_detail.png", _fix_image(torch_img_to_np(visdict['geometry_detail'][0])))
+		vals, visdict = decode(emoca, vals, training=False)
+		print(f"visdict['geometry_detail'][0].shape: {visdict['geometry_detail'][0].shape}")
+
+		imsave(final_out_folder / f"geometry_detail_{frame_name}.png", _fix_image(torch_img_to_np(visdict['geometry_detail'][0])))
+
+
+	
+
+
+def crop_out_inference_frames(videos_folderpath=None, cropped_frames_folderpath=None, bboxes_filepath=None):
+	videos_folderpath = '/home/avocoral/Downloads/Obamaset/Obama_meta/videos'
+	landmarks_folderpath = '/home/avocoral/Downloads/Obamaset/Obama_meta/landmarks'
+	new_landmarks_folderpath = '/home/avocoral/Downloads/Obamaset/Obama_meta/new_landmarks'
+	cropped_frames_folderpath = '/home/avocoral/Downloads/Obamaset/Obama_meta/cropped_frames'
+	bboxes_filepath = '/home/avocoral/Downloads/Obamaset/Obama_meta/detections/bboxes.pkl'
+	# landmarks = [detection_fnames, landmark_fnames, centers, sizes, last_frame_id]
+	bboxes = readLandmarks(bboxes_filepath)
+	min_index = max(range(len(bboxes[2])), key=lambda i: bboxes[2][i][0])
+	min_size = bboxes[2][min_index][0]
+	num_frames = len(os.listdir(videos_folderpath))
+	print(f'min_size = {min_size}')
+	videos_folderpath_list = os.listdir(videos_folderpath).sort()
+	cropped_warped_landmarks_list = []
+	for i, fname in enumerate(bboxes[4]):
+		# double check center, name and fname
+		print(f'----------- frame# {i}/{num_frames} -----------')
+		detection_fname = str(bboxes[0][i][0]).split('/', -1)[-1].split('_')[0] + '.png'
+		print(f'detection_fname: {detection_fname}')
+		img = imread(os.path.join(videos_folderpath, detection_fname))
+		# img = Image.open(os.path.join(videos_folderpath, detection_fname))
+		# width, height = img.shape[0], img.shape[1]
+		center = bboxes[1][i][0]
+		size = bboxes[2][i][0]
+		landmarks_filepath = os.path.join(landmarks_folderpath, str(bboxes[4][i][0]).split('/')[-1])
+		# print(f'landmarks_filepath:{landmarks_filepath}, orig_fname: {bboxes[4][i][0]}')
+		landmarks = readLandmarks(landmarks_filepath)[1]
+		# print(f'landmarks: {landmarks}')
+		# print(f'landmarks.type: {landmarks.type}')
+		print(f'center: {center}')
+		# point2bbox(center, size)
+		# left = center[0] - max_size // 2
+		# top = center[1] - max_size // 2
+		# right = center[0] + max_size // 2
+		# bottom = center[1] + max_size // 2
+		### cropping and warping ###
+		# get mask (hacky way)
+		# dst_image, dts_landmark = bbpoint_warp(image, center, size, self.image_size, landmarks=landmarks[bi])
+		# cropped_warped_img = bbpoint_warp(img, center, size, min_size, output_shape=(img.shape[0], img.shape[1]), inv=False)
+		cropped_warped_img, cropped_warped_landmarks = bbpoint_warp(img, center, size, min_size, landmarks=landmarks)
+		# cropped_warped_img = Image.fromarray((warped_im * 255).astype(np.uint8))
+
+		imsave(os.path.join(cropped_frames_folderpath, detection_fname), cropped_warped_img)
+		file_path = os.path.join(new_landmarks_folderpath, f'{detection_fname[:-4]}_000.pkl')
+		print(f'file_path: {file_path}')
+		with open(file_path, 'wb') as file:
+			pickle.dump(cropped_warped_landmarks, file)
+	# save cropped_warped_landmarks_list
+	# move cropped_warped_imgs to gpu
+	# np.save("/home/avocoral/Downloads/Obamaset/Obama_meta/processed_landmarks", cropped_warped_landmarks_list)
+	# we don't need new 2D landmarks, we use world landmarks and they are the same independent of image cropping
+
+		#######
+		# cropped_img = img.crop((left, top, right, bottom))
+		# cropped_warped_img.save(os.path.join(cropped_frames_folderpath, fname))
+
 
 if __name__ == '__main__':
-
-	create_reconstruction_from_vals()
-
-	# landmark = '/home/avocoral/MemFace/emoca/output/processed_2023_Jan_02_17-22-45/testvid/landmarks/000042_000.pkl'
+	# landmarks = readLandmarks('/home/avocoral/Downloads/Obamaset/Obama_meta/new_landmarks/002625_000.pkl')
+	# print(f'new_landmarks:{landmarks}')
+	# crop_out_inference_frames()
+	# create_reconstruction_from_vals()
+	# landmarks_filepath = '/home/avocoral/Downloads/Obamaset/Obama_meta/detections/bboxes.pkl'
+	construct_explicitmem('/home/avocoral/Downloads/Obamaset/Obama_vid/Obama')
+	# landmarks = [detection_fnames, landmark_fnames, centers, sizes, last_frame_id]
+	# landmarks = readLandmarks(landmarks_filepath)
 	# exp_filepath = '/mnt/sda/AVSpeech/video/GWwK4ak096M_9/000001_000/exp.npy'
 	# pose_filepath = '/mnt/sda/AVSpeech/video/GWwK4ak096M_9/000001_000/pose.npy'
 	# shape_filepath = '/mnt/sda/AVSpeech/video/GWwK4ak096M_9/000001_000/shape.npy'

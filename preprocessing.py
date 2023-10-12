@@ -21,7 +21,7 @@ import torch
 DATA_DIR = Path('/mnt/sda/AVSpeech')
 AUDIO_DIR = DATA_DIR / 'audio_xac'
 AUDIO_ENCODINGS_DIR = DATA_DIR / 'audio_encodings_xac'
-TRANSCRIPT_DIR = DATA_DIR / 'transcripts_xac'
+TRANSCRIPT_DIR = DATA_DIR / 'transcripts_xaa'
 
 
 sys.path.insert(0, '/home/avocoral/MemFace')
@@ -82,13 +82,15 @@ def getAudioEncodingWorker(worker_id):
 								waveform, _ = librosa.load(audio_location, sr=sample_rate)
 						except Exception as e:
 								print(f"error {e} on loading {name}")
-						transcript, all_logits = getAudioEncoding(waveform, processor, model)
+						# transcript, all_logits = getAudioEncoding(waveform, processor, model)
+						
+						getAudioEncodingSimplified(waveform, audio_encoding_location, processor, model)
 						# print(f'transcript: {transcription}')
 						# print(f'len of logits: {len(all_logits)}')
 						# audio_encoding = torch.stack((transcription, all_logits), 0)
-						torch.save(all_logits, audio_encoding_location)
-						with open(transcript_location, 'w') as f:
-								f.write(transcript)
+						# torch.save(all_logits, audio_encoding_location)
+						# with open(transcript_location, 'w') as f:
+								# f.write(transcript)
 
 
 def getAudioEncoding(waveform, processor, model):
@@ -133,20 +135,12 @@ def getAudioEncoding(waveform, processor, model):
 		return transcription, all_logits
 
 
-def getAudioEncodingSimplified(audio_location, audio_encoding_location):
-		processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-xlsr-53-espeak-cv-ft")
-		model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-xlsr-53-espeak-cv-ft").to(device)
-		sample_rate = 16000
-		
-		waveform, _ = librosa.load(audio_location, sr=sample_rate)
-		
+def getAudioEncodingSimplified(waveform, audio_encoding_location, processor, model):
 		input_values = processor(waveform, sampling_rate=sample_rate, return_tensors="pt").input_values
 		print(f'input_values.shape: {input_values.shape}')
 		with torch.no_grad():
 				all_logits = model(input_values.to(device))
-				print(f'model(input_values.to(device)): {all_logits}')
 				logits = all_logits.logits[0]
-		print(f'logits.shape: {logits.shape}')
 		torch.save(logits, audio_encoding_location)
 
 		
@@ -350,7 +344,7 @@ def face_mask(root_dir):
 
 if __name__ == '__main__':
 	# extract_audio()
-	# extractAudioEncodings()
+	extractAudioEncodings()
 	# input_video = '02uzUf1LilE_10.mp4'
 	# output_folder = '/home/avocoral/MemFace/02uzUf1LilE_10.mp4'
 	# extractCoeff(input_video, output_folder)
@@ -369,6 +363,6 @@ if __name__ == '__main__':
 	# get_dataset_length(preprocessed_vids_dir, orig_dir)
 	
 	# count_all_clean_data()
-	audio_location = '/home/avocoral/Downloads/Obamaset/Obama_vid_30.wav'
-	audio_encoding_location = '/home/avocoral/Downloads/Obamaset/Obama_vid_30.pt'
-	getAudioEncodingSimplified(audio_location, audio_encoding_location)
+	# audio_location = '/home/avocoral/Downloads/Obamaset/Obama_vid_30.wav'
+	# audio_encoding_location = '/home/avocoral/Downloads/Obamaset/Obama_vid_30.pt'
+	# getAudioEncodingSimplified(audio_location, audio_encoding_location)

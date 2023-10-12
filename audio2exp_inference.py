@@ -73,35 +73,47 @@ def frames_to_video(input_folder, output_file, audio_file=None, fps=30):
 
 	print(f"Video '{output_file}' has been created successfully!")
 
+# extract original crops
+def extract_original_crops():
+	pass
+
+
 
 def audio2expression(audio_embed_filepath):
 	device = 'cuda:0'
 
-	audio2exp = Audio2Exp()
-	checkpoints = torch.load('/home/avocoral/MemFace/adaptation_checkpoints/MemFace/168jb4lf/checkpoints/epoch=999-step=999.ckpt')
-	audio2exp.load_state_dict(checkpoints["state_dict"])
-	audio2exp.to('cuda:0')
-	audio2exp.eval()
+	# audio2exp = Audio2Exp()
+	# checkpoints = torch.load('/home/avocoral/MemFace/adaptation_checkpoints/MemFace/168jb4lf/checkpoints/epoch=999-step=999.ckpt')
+	# audio2exp.load_state_dict(checkpoints["state_dict"])
+	# audio2exp.to('cuda:0')
+	# audio2exp.eval()
 
 	# read audio embedding
-	audio_embed = torch.load(audio_embed_filepath)
-	print(f'audio_embed.shape after its loaded: {audio_embed.shape}')
+	# audio_embed = torch.load(audio_embed_filepath)
+	# print(f'audio_embed.shape after its loaded: {audio_embed.shape}')
 	# audio_embed = torch.cat(torch.load(audio_embed_filepath), dim=0)
-	audio_embed = audio_embed[:500]
-	print(f'audio_embed before interpolation: {audio_embed.shape}')
-	audio_embed = F.interpolate(audio_embed.T.unsqueeze(0), size=[300], mode='nearest').squeeze(0).T
-	print(f'audio_embed after interpolation, before inference: {audio_embed.shape}')
+	# audio_embed = audio_embed[:500]
+	# print(f'audio_embed before interpolation: {audio_embed.shape}')
+	# audio_embed = F.interpolate(audio_embed.T.unsqueeze(0), size=[300], mode='nearest').squeeze(0).T
+	# print(f'audio_embed after interpolation, before inference: {audio_embed.shape}')
 
-	audio_embed = audio_embed.unsqueeze(0)
-	print(f'audio_embed after adding batch dim: {audio_embed.shape}')
+	# audio_embed = audio_embed.unsqueeze(0)
+	# print(f'audio_embed after adding batch dim: {audio_embed.shape}')
 	# collate_fn part
 
-	audio_embed_lengths = [len(seq) for seq in audio_embed]
-	padded_audio_embed = torch.nn.utils.rnn.pad_sequence(audio_embed, batch_first=True)
-	packed_audio_embed = torch.nn.utils.rnn.pack_padded_sequence(padded_audio_embed, audio_embed_lengths, batch_first=True, enforce_sorted=False).to('cuda')
+	# audio_embed_lengths = [len(seq) for seq in audio_embed]
+	# padded_audio_embed = torch.nn.utils.rnn.pad_sequence(audio_embed, batch_first=True)
+	# packed_audio_embed = torch.nn.utils.rnn.pack_padded_sequence(padded_audio_embed, audio_embed_lengths, batch_first=True, enforce_sorted=False).to('cuda')
 
-	with torch.no_grad():
-		new_exp = audio2exp(packed_audio_embed)
+	# with torch.no_grad():
+	# 	new_exp = audio2exp(packed_audio_embed)
+	
+	# test exp - high res geometry_detail.imgs
+	coeff_dir ='/home/avocoral/Downloads/Obamaset/Obama_vid/Obama'
+	new_exp = []
+	for i, frame_name in enumerate([str(i).zfill(6)+'_000' for i in range(301, 601)]):
+		new_exp.append(torch.from_numpy(np.load(os.path.join(coeff_dir, frame_name, 'exp.npy'))))
+	new_exp = torch.stack(new_exp)
 
 	new_exp = new_exp.squeeze(0)
 	print(f'new_exp.shape: {new_exp.shape}')
@@ -147,45 +159,56 @@ def audio2expression(audio_embed_filepath):
 	emoca.eval()
 
 	vals = dict()
-	vals["expcode"] = new_exp.to('cuda')
-# 	# .unsqueeze(0).to('cuda')
-	vals["shapecode"] = old_shape.to('cuda')
-	vals["posecode"] = old_pose.to('cuda')
-	vals["texcode"] =	old_tex.to('cuda')
-	vals["cam"] = old_cam.to('cuda')
-	vals["lightcode"] = torch.from_numpy(np.load('/home/avocoral/Downloads/Obamaset/Obama_vid_with_light/dataset_preprocessed/Obama_vid/000001_000/light.npy')).unsqueeze(0).repeat(300, 1, 1).to('cuda')
-	vals["detailcode"] = old_detail.to('cuda')
+	vals["expcode"] = new_exp[0].unsqueeze(0).to('cuda')
+	# 	# .unsqueeze(0).to('cuda')
+	vals["shapecode"] = old_shape[0].unsqueeze(0).to('cuda')
+	vals["posecode"] = old_pose[0].unsqueeze(0).to('cuda')
+	vals["texcode"] =	old_tex[0].unsqueeze(0).to('cuda')
+	vals["cam"] = old_cam[0].unsqueeze(0).to('cuda')
+	vals["lightcode"] = torch.from_numpy(np.load('/home/avocoral/Downloads/Obamaset/Obama_vid_with_light/dataset_preprocessed/Obama_vid/000001_000/light.npy')).unsqueeze(0).to('cuda')
+	vals["detailcode"] = old_detail[0].unsqueeze(0).to('cuda')
 	vals['detailemocode'] = None
 	print(f'vals["expcode"].shape: {vals["expcode"].shape}')
 	print(f'vals["posecode"].shape: {vals["posecode"].shape}')
 	print(f'vals["shapecode"].shape: {vals["shapecode"].shape}')
 
-	test_frames = ['/home/avocoral/Downloads/Obamaset/Obama_vid/Obama/006294_000/inputs.png']
-	testdata = TestData(test_frames, iscrop=True, face_detector='fan')
-	print(f"testdata[0]['image']: {testdata[0]['image'].shape}")
-	print(f'len(testdata): {len(testdata)}')
-	vals["images"] = testdata[0]['image'].unsqueeze(0).repeat(300, 1, 1, 1).to('cuda')
+	# test_frames = ['/home/avocoral/Downloads/Obamaset/Obama_vid/Obama/006294_000/inputs.png']
+	# testdata = TestData(test_frames, iscrop=True, face_detector='fan')
+	# print(f"testdata[0]['image']: {testdata[0]['image'].shape}")
+	# print(f'len(testdata): {len(testdata)}')
+	# input_tensor = testdata[0]['image']
+
+	# Define the target size
+	# target_size = (512, 512)
+
+	# Resize the input tensor to the target size
+	# resized_tensor = F.interpolate(input_tensor.unsqueeze(0), size=target_size, mode='bilinear', align_corners=False)
+	# resized_tensor = resized_tensor.squeeze(0)
+	# testdata[0]['image']
+	# vals["images"] = torch.randn((3, 512, 512)).unsqueeze(0).repeat(300, 1, 1, 1).to('cuda')
+	vals["images"] = torch.randn((3, 512, 512)).unsqueeze(0).to('cuda')
 
 	vals, visdict = decode(emoca, vals, training=False)
-	
+		
 	imsave(final_out_folder / f"geometry_detail_{i}.png", _fix_image(torch_img_to_np(visdict['geometry_detail'][0])))
-	for i, image in enumerate(visdict['geometry_detail'].view(300, 3, 224, 224)):
-		imsave(final_out_folder / f"geometry_detail_{i}.png", _fix_image(torch_img_to_np(image)))
-	frames_to_video('/home/avocoral/MemFace/test_folder', "/home/avocoral/MemFace/Obama_ref_adapted.mp4", fps=30)
-	# 	print(f'Frame {i} is ready!')
-	
-# add audio_track
+		# for i, image in enumerate(visdict['geometry_detail'].view(300, 3, 512, 512)):
+			# imsave(final_out_folder / f"geometry_detail_{i}.png", _fix_image(torch_img_to_np(image)))
+		# frames_to_video('/home/avocoral/MemFace/test_folder', "/home/avocoral/MemFace/Obama_ref_adapted.mp4", fps=30)
+		# 	print(f'Frame {i} is ready!')
+		
+	# add audio_track
 
 
 if __name__ == "__main__":
-	audio_filepath = '/home/avocoral/MemFace/MemoryFaceTest.wav'
+	# audio_filepath = '/home/avocoral/MemFace/MemoryFaceTest.wav'
 	audio_embedding_filepath = '/home/avocoral/MemFace/MemoryFaceTest.pt'
-	logits = extractAudioEncoding(audio_filepath, audio_embedding_filepath)
+	# logits = extractAudioEncoding(audio_filepath, audio_embedding_filepath)
 	# print(f'len(logits): {len(logits)}')
 	# for i in range(len(logits)):
 	# 	print(f'logits[{i}].shape: {logits[i].shape}')
 
-	
+	if torch.cuda.is_available():
+		torch.cuda.empty_cache()  # Clean GPU memory cache
 	audio2expression(audio_embedding_filepath)
 	# input_folder_path = '/home/avocoral/MemFace/test_folder'
 	# output_video_path = "Obama_ref_adapted.mp4"
