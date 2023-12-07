@@ -48,30 +48,6 @@ def extractAudioEncoding(audio_filepath, audio_embedding_filepath):
 	print(f'transcript: {transcript}')
 	return all_logits
 
-def frames_to_video(input_folder, output_file, audio_file=None, fps=30):
-	frame_files = os.listdir(input_folder)
-	frame_files.sort(key=natural_sort_key)
-
-	frame_shape = cv2.imread(os.path.join(input_folder, frame_files[0])).shape[:2]
-	fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-	out = cv2.VideoWriter(output_file, fourcc, fps, frame_shape)
-
-	for frame_file in frame_files:
-			frame_path = os.path.join(input_folder, frame_file)
-			frame = cv2.imread(frame_path)
-			out.write(frame)
-
-	out.release()
-	
-	if audio_file:
-		video_clip = VideoFileClip(output_file)
-		audio_clip = AudioFileClip(audio_file)
-		video_clip = video_clip.set_audio(audio_clip)
-		video_clip.write_videofile(output_file, codec='libx264', audio_codec='aac')
-		audio_clip.close()
-		video_clip.close()
-
-	print(f"Video '{output_file}' has been created successfully!")
 
 # extract original crops
 def extract_original_crops():

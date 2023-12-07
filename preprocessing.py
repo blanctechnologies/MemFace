@@ -135,13 +135,16 @@ def getAudioEncoding(waveform, processor, model):
 		return transcription, all_logits
 
 
-def getAudioEncodingSimplified(waveform, audio_encoding_location, processor, model):
+def getAudioEncodingSimplified(waveform, processor, model, audio_embed_filepath):
+		if os.path.exists(audio_embed_filepath):
+				return torch.load(audio_embed_filepath)
 		input_values = processor(waveform, sampling_rate=sample_rate, return_tensors="pt").input_values
 		print(f'input_values.shape: {input_values.shape}')
 		with torch.no_grad():
 				all_logits = model(input_values.to(device))
 				logits = all_logits.logits[0]
-		torch.save(logits, audio_encoding_location)
+		torch.save(logits, audio_embed_filepath)
+		return logits
 
 		
 
